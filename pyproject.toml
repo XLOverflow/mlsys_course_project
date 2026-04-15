@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hetero_cost_model"
+version = "0.1.0"
+description = "Learned cost model for CPU/GPU heterogeneous LLM inference"
+requires-python = ">=3.10"
+authors = [
+    { name = "Xiang Li" },
+    { name = "Xinhao Tan" },
+    { name = "Zhikai Hu" },
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

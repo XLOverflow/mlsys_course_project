@@ -1,0 +1,9 @@
+torch>=2.1
+torch_geometric>=2.4
+transformers>=4.35
+numpy
+pandas
+scipy
+scikit-learn
+pytest
+tqdm
