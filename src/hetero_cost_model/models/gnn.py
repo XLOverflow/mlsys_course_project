@@ -39,8 +39,8 @@ class CostModel(nn.Module):
 
     def __init__(
         self,
-        hidden_dim: int = 128,
-        num_layers: int = 3,
+        hidden_dim: int = 64,
+        num_layers: int = 2,
         heads: int = 4,
         backbone: Backbone = "gat",
         dropout: float = 0.1,
@@ -48,6 +48,13 @@ class CostModel(nn.Module):
         config_dim: int = CONFIG_FEATURE_DIM,
         hardware_dim: int = HARDWARE_FEATURE_DIM,
     ):
+        # Defaults sized for 1500-2500 sample regime (data_collection_plan.md
+        # §2.3). Earlier draft used hidden=128/num_layers=3 (~155 K params);
+        # at the training-data scale this likely over-parameterizes the model
+        # and lets the hardware branch memorize the few training anchors.
+        # hidden=64/num_layers=2 gives ~78 K params — still large for 1.5 K
+        # samples but markedly healthier. Can be overridden via CLI for
+        # ablation (e.g. ``--hidden 128`` to reproduce the old capacity).
         super().__init__()
         if backbone not in _BACKBONES:
             raise ValueError(f"unknown backbone: {backbone}")

@@ -359,12 +359,12 @@ for each row in all_profiling.csv:
 训练/验证/测试集划分方式（见 [two_week_execution_plan.md §5.2](two_week_execution_plan.md)）：
 
 - **硬件维度**：
-  - V100+A100+H100 行 → 训练
+  - V100 + T4 + A100 + A10 + L4 + H100 行 → 训练（**6 个 anchor**，覆盖 5 个架构代际）
   - **H200 行 → few-shot 评估**（50/100/200 samples，不再当 zero-shot；理由见 [research_review.md §2.1](research_review.md)）
   - **B200 行 → hero zero-shot + few-shot 对照**
 - **工作负载维度**：按 `model_name` 分层，确保每种架构都在训练集里有代表
 - **交叉切分**：除随机 hold-out 外，必跑
-  - **leave-one-GPU-out CV**（V100/A100/H100 三折）作为主 claim
+  - **leave-one-GPU-out CV**（6 个 training anchor 的 6 折）作为主 claim
   - **leave-one-model-out**（验证是否有模型级泄漏）
 
 ---

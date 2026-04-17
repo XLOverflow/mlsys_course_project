@@ -70,21 +70,26 @@
 
 五种 GPU 横跨四代架构（Volta → Ampere → Hopper → Blackwell），构成训练集（3个）和泛化测试集（2个）：
 
-| 特征 | V100 (Volta) | A100-40GB (Ampere) | H100 (Hopper) | H200 (Hopper+) | B200 (Blackwell) |
-|------|-------------|-------------------|---------------|----------------|-----------------|
-| **角色** | 训练 (PSC) | 训练 (Modal) | 训练 (PSC) | few-shot 测试 (Modal) | hero zero-shot + few-shot 对照 (Modal) |
-| FP16 TFLOPS | 125 | 312 | 1,979 | 1,979 | ~4,500 |
-| HBM 容量 | 32 GB | 40 GB | 80 GB | 141 GB | 180 GB |
-| HBM 带宽 | 900 GB/s | 1,555 GB/s | 3,350 GB/s | 4,800 GB/s | 8,000 GB/s |
-| L2 cache | 6 MB | 40 MB | 50 MB | 50 MB | 96 MB |
-| SM 数量 | 80 | 108 | 132 | 132 | 160 |
-| 特征向量 h | [125, 32, 900, 6, 80] | [312, 40, 1555, 40, 108] | [1979, 80, 3350, 50, 132] | [1979, 141, 4800, 50, 132] | [4500, 180, 8000, 96, 160] |
+**6 个 training anchor + 2 个 test target**（全部 Modal 覆盖；PSC 可作冗余备份）：
+
+| 特征 | V100 | T4 | A100-40GB | A10 | L4 | H100 | H200 | B200 |
+|------|------|------|-------|------|------|------|------|------|
+| **角色** | 训练 | 训练 | 训练 | 训练 | 训练 | 训练 | few-shot 测试 | **hero zero-shot** + few-shot 对照 |
+| **架构 (sm)** | Volta (70) | Turing (75) | Ampere (80) | Ampere (86) | Ada (89) | Hopper (90) | Hopper+ (90) | Blackwell (100) |
+| FP16 TFLOPS | 125 | 65 | 312 | 125 | 121 | 1,979 | 1,979 | ~4,500 |
+| HBM / 内存 | 32 GB | 16 GB | 40 GB | 24 GB | 24 GB | 80 GB | 141 GB | 180 GB |
+| 显存带宽 | 900 | 320 | 1,555 | 600 | 300 | 3,350 | 4,800 | 8,000 GB/s |
+| L2 cache | 6 MB | 4 MB | 40 MB | 6 MB | 48 MB | 50 MB | 50 MB | 96 MB |
+| SM 数量 | 80 | 40 | 108 | 72 | 58 | 132 | 132 | 160 |
+| **Modal SKU lock** | — | `T4` | `A100-40GB` | `A10` | `L4` | `H100!` | `H200` | `B200` |
+
+**为什么 6 个 training anchor**：原计划只有 3 个（V100 / A100 / H100），5 维连续硬件向量在 3 个点上欠定（3 个点定义不了 5D 函数）。加到 6 个后覆盖 **5 个架构代际**（Volta, Turing, Ampere, Ada, Hopper），且 Ampere 内部有 2 个点（A100 sm_80 + A10 sm_86），测试"同 arch 不同 spec"的学习能力。论文里的"spec-only zero-shot 外推到 Blackwell"claim 站得住的前提。
 
 **硬件特征向量 h（5 维）**：峰值 FP16 TFLOPS、HBM 容量、HBM 带宽、**L2 cache size**、SM 数量。所有数值做归一化处理（除以各维理论上限），使模型能通过连续物理特征感知硬件差异。**全部为片上 spec**，没有互联带宽、没有代际 ordinal——跟 NeuSight (ASPLOS'25) 的 on-chip-only 惯例一致。
 
 **为什么用 L2 cache 而不是 PCIe/NVLink 带宽**：PCIe / NVLink 这类互联带宽在单 GPU 的 forward-pass 测量窗口内不会被使用（输入和权重早在 GPU 上），作为预测特征是 confound；L2 cache 是片上特征，影响带宽放大和小 kernel 延迟，是真实有物理信号的维度。
 
-**为什么不加"架构代际" ordinal**：初版曾包含 `arch_gen` ∈ {0.00, 0.33, 0.67, 1.00} 四档，但 3 个训练 anchor 只覆盖前三档，MLP 可以把它当成离散 device-ID 直接查表：H200 的 arch_gen 和 H100 完全一样，泛化被"白送"；B200 的 1.00 在训练从未出现，MLP 外推不受约束。移除后模型只能依赖真实物理量（TFLOPS / 带宽 / L2 / SM 数），spec-only 零样本泛化的 claim 干净许多。即使 B200 外推效果不理想，这也是**有价值的 negative finding**（说明需要更多代际区分物理量），比伪装的 ordinal 诚实。
+**为什么不加"架构代际" ordinal**：初版曾包含 `arch_gen` ∈ {0.00, 0.33, 0.67, 1.00} 四档，但 arch_gen 本质是"披着连续向量外衣的离散 device-ID"——MLP 可以把它当成 lookup 直接查表（H200 的 arch_gen 和 H100 完全一样，所以泛化被"白送"；B200 的 1.00 在训练从未出现，MLP 外推不受约束）。移除后模型只能依赖真实物理量（TFLOPS / 带宽 / L2 / SM 数），spec-only 零样本泛化的 claim 干净许多。即使 B200 外推效果不理想，这也是**有价值的 negative finding**（说明需要更多代际区分物理量），比伪装的 ordinal 诚实。
 
 H200 与 H100 同架构但规格不同（HBM 容量 80→141、带宽 3350→4800；fp16_tflops/L2/SM 完全相同），是"同族内插值"泛化；B200 是全新架构，是"跨架构外推"泛化——两种难度的泛化测试使实验更有层次。
 
@@ -168,9 +173,9 @@ s 编码为归一化的 2 维全局向量，在图级别 readout 之后拼接到
 
 ### 4.4 训练策略
 
-- **Phase 1**：在 V100 + A100 + H100 数据上训练，学习跨 GPU 代际的预测能力
+- **Phase 1**：在 V100 + T4 + A100 + A10 + L4 + H100 数据上训练，学习跨 GPU 代际的预测能力
 - **Phase 2**：在 H200 上做 **few-shot** 评估（50/100/200 samples，同架构不同规格，测试插值泛化）；在 B200 上做 **hero zero-shot** 评估（全新架构，测试外推泛化）；然后用少量 B200 样本做 few-shot 微调，测量改善幅度
-  > H200 改用 few-shot 而非 zero-shot 的原因：H200 在 h 向量中与 H100 只有 `memory_gb` 和 `bandwidth_gbs` 不同，compute-bound 区延迟本就 ≈ H100，zero-shot 在只有 3 个训练 anchor 时几乎是白送的
+  > H200 改用 few-shot 而非 zero-shot 的原因：H200 在 h 向量中与 H100 只有 `memory_gb` 和 `bandwidth_gbs` 不同，compute-bound 区延迟本就 ≈ H100，zero-shot 时几乎是白送（即使现在有 6 个 training anchor，H200 仍和 H100 的 3 维 h 完全相同，同族插值缺乏挑战性）
 
 ---
 
@@ -232,7 +237,7 @@ done
 
 #### Table 2 — 硬件泛化（Hero，支撑 C2）
 
-训练集固定 = V100 + A100 + H100，改变 target。
+训练集固定 = V100 + T4 + A100 + A10 + L4 + H100，改变 target。
 
 | Method \ Target | H100 hold-out<br/>(in-distribution) | H200 zero-shot<br/>(same arch interp.) | H200 few-shot (100) | **B200 zero-shot**<br/>(hero, cross-arch) | B200 few-shot (50/100/200) |
 |---|:---:|:---:|:---:|:---:|:---:|
@@ -394,10 +399,10 @@ python scripts/train_and_eval.py --csv data/raw/all.csv --split leave-gpu=v100 -
 | 负责人 | 任务 | 交付物 | 需要GPU |
 |--------|------|--------|---------|
 | **Xiang Li** | 【Modal】同时提交 H200 + B200 profiling job（锁定 SKU：`gpu="B200"`，不是 `B200+`）。数据拆分：**H200 改为 few-shot 设置**（50/100/200 samples）；**B200 作为 hero zero-shot**，另留 20% 做 few-shot 对照 | `h200.csv` + `b200.csv` | H200 + B200 (Modal) |
-| **Xinhao Tan** | Zero-shot 评估：V100+A100+H100 训练好的模型直接在 B200 上跑。**同表必须报告对照基线**：(a) Constant-h 基线、(b) HW-MLP only 基线、(c) Per-graph mean + GPU offset。这是诊断 h 分支是否真的在学硬件缩放的关键 | `zero_shot_results.csv` | 否 |
+| **Xinhao Tan** | Zero-shot 评估：V100+T4+A100+A10+L4+H100 训练好的模型直接在 B200 上跑。**同表必须报告对照基线**：(a) Constant-h 基线、(b) HW-MLP only 基线、(c) Per-graph mean + GPU offset。这是诊断 h 分支是否真的在学硬件缩放的关键 | `zero_shot_results.csv` | 否 |
 | **Zhikai Hu** | 实现 few-shot 微调：取训练好的模型，分别用 50/100/200 个 H200/B200 样本微调。对比从头在目标 GPU 上训练的效果。输出误差改善曲线 | `few_shot_results.csv` | 否（CPU 训练即可） |
 
-**"H200 改成 few-shot"的原因**：评审发现 H200 vs H100 在 h 向量中只有 `memory_gb` 和 `bandwidth_gbs` 不同（其余 3 维 `fp16_tflops / l2_cache_mb / sm_count` 完全相等），compute-bound 区 latency 本就 ≈ H100，zero-shot 在只有 3 个训练 anchor 时几乎是白送的。few-shot 更诚实。详见 [research_review.md §2.1](research_review.md)。
+**"H200 改成 few-shot"的原因**：评审发现 H200 vs H100 在 h 向量中只有 `memory_gb` 和 `bandwidth_gbs` 不同（其余 3 维 `fp16_tflops / l2_cache_mb / sm_count` 完全相等），compute-bound 区 latency 本就 ≈ H100——同架构插值对 C2 缺乏挑战性（即使 6 个 training anchor 也无济于事）。few-shot 更诚实。详见 [research_review.md §2.1](research_review.md)。
 
 #### Day 10–11（周三–周四）：消融研究 & 跨模型评估
 
