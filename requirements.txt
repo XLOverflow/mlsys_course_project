@@ -1,6 +1,7 @@
 torch>=2.1
 torch_geometric>=2.4
-transformers>=4.35
+transformers>=4.35,<4.52 # v5 removed transformers.utils.fx; 4.52+ masking_utils.py uses torch.vmap (incompatible with HFTracer). 4.46.3 verified in Day 1 smoke test.
+modal
 numpy
 pandas
 scipy
