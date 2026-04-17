@@ -15,7 +15,7 @@ CONFIG_FEATURE_DIM: int = 2  # [batch_size_norm, seq_len_norm]
 # config grid (see data_collection_plan.md §2.3). Keep components in [0, 1]
 # so they share scale with the normalized hardware vector ``h``.
 _MAX_BATCH: float = 16.0
-_MAX_SEQ: float = 512.0
+_MAX_SEQ: float = 1024.0
 
 
 @dataclass(frozen=True)
@@ -30,14 +30,20 @@ class InferenceConfig:
 
 
 def config_grid(
-    batch_sizes: Sequence[int] = (1, 2, 4, 8, 16),
-    seq_lens: Sequence[int] = (64, 128, 256, 512),
+    batch_sizes: Sequence[int] = (1, 2, 3, 4, 6, 8, 12, 16),
+    seq_lens: Sequence[int] = (32, 64, 128, 256, 512, 1024),
 ) -> List[InferenceConfig]:
     """Return the Cartesian product of batch sizes and sequence lengths.
 
-    Defaults match ``data_collection_plan.md §2.3`` (20 configs per model).
+    Defaults match ``data_collection_plan.md §2.3``: 8 batch × 6 seq = 48
+    configs per (model, GPU). The non-power-of-2 batches (3, 6, 12) give
+    the model non-trivial interpolation targets between the log2 sweep,
+    and seq extends to 32 (short-prompt interactive case) and 1024
+    (long-context case, OOM-prone on 16-24 GB cards).
+
     Smaller grids can be passed explicitly for large models that OOM on
-    bigger (batch, seq) combinations.
+    bigger (batch, seq) combinations (the profiler records NaN rows on
+    OOM and continues, but caller can prune upfront to save wall time).
     """
     return [
         InferenceConfig(b, s)
