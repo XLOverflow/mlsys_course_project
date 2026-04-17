@@ -81,7 +81,7 @@
 **现象**：[hardware.py:47-53](src/hetero_cost_model/hardware.py#L47-L53) 训练集只有 3 个 h 向量。[gnn.py:89-93](src/hetero_cost_model/models/gnn.py#L89-L93) 把 5 维 h concat 到 256 维图表示后进 MLP head —— MLP 在 5 维空间记住 3 个点 + 线性插值，这不是"学习硬件缩放"。
 
 **后果**：
-- **H200 zero-shot 几乎是白送的**：H200 vs H100 只有 `memory_gb` (80→141) 和 `bandwidth_gbs` (3350→4800) 不同，其他 4 维（`fp16_tflops / l2_cache_mb / sm_count / arch_gen`）完全相等。小 seq_len 下延迟本就 ≈ H100，模型即使完全忽略那两维都能通过评估。
+- **H200 zero-shot 几乎是白送的**：H200 vs H100 只有 `memory_gb` (80→141) 和 `bandwidth_gbs` (3350→4800) 不同，其他 3 维（`fp16_tflops / l2_cache_mb / sm_count`）完全相等。小 seq_len 下延迟本就 ≈ H100，模型即使完全忽略那两维都能通过评估。
 - **B200 在 FP16 TFLOPS 上是 H100 的 2.3 倍**，ReLU MLP 的纯外推没有任何约束，输出是任意的。
 
 **必须做的验证**（否则泛化 claim 站不住）：

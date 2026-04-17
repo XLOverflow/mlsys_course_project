@@ -78,16 +78,15 @@
 | HBM 带宽 | 900 GB/s | 1,555 GB/s | 3,350 GB/s | 4,800 GB/s | 8,000 GB/s |
 | L2 cache | 6 MB | 40 MB | 50 MB | 50 MB | 96 MB |
 | SM 数量 | 80 | 108 | 132 | 132 | 160 |
-| 架构代际 (ordinal) | 0.00 | 0.33 | 0.67 | 0.67 | 1.00 |
-| 特征向量 h | [125, 32, 900, 6, 80, 0.00] | [312, 40, 1555, 40, 108, 0.33] | [1979, 80, 3350, 50, 132, 0.67] | [1979, 141, 4800, 50, 132, 0.67] | [4500, 180, 8000, 96, 160, 1.00] |
+| 特征向量 h | [125, 32, 900, 6, 80] | [312, 40, 1555, 40, 108] | [1979, 80, 3350, 50, 132] | [1979, 141, 4800, 50, 132] | [4500, 180, 8000, 96, 160] |
 
-**硬件特征向量 h（6 维）**：峰值 FP16 TFLOPS、HBM 容量、HBM 带宽、**L2 cache size**、SM 数量、架构代际 ordinal。所有数值做归一化处理，使模型能通过连续特征感知硬件差异。
+**硬件特征向量 h（5 维）**：峰值 FP16 TFLOPS、HBM 容量、HBM 带宽、**L2 cache size**、SM 数量。所有数值做归一化处理（除以各维理论上限），使模型能通过连续物理特征感知硬件差异。**全部为片上 spec**，没有互联带宽、没有代际 ordinal——跟 NeuSight (ASPLOS'25) 的 on-chip-only 惯例一致。
 
-**为什么用 L2 cache 而不是 PCIe 带宽**：跟 NeuSight (ASPLOS'25) 对齐。PCIe / NVLink 这类互联带宽在单 GPU 的 forward-pass 测量窗口内不会被使用（输入和权重早在 GPU 上），作为预测特征是 confound；L2 cache 是片上特征，影响带宽放大和小 kernel 延迟，是真实有物理信号的维度。
+**为什么用 L2 cache 而不是 PCIe/NVLink 带宽**：PCIe / NVLink 这类互联带宽在单 GPU 的 forward-pass 测量窗口内不会被使用（输入和权重早在 GPU 上），作为预测特征是 confound；L2 cache 是片上特征，影响带宽放大和小 kernel 延迟，是真实有物理信号的维度。
 
-**为什么加 arch_gen**：相当于一个平滑的代际索引。H200 的插值泛化和 B200 的外推泛化都依赖它作为"代际顺序"的提示。消融实验里会检视它是否是一个伪装的离散 lookup。
+**为什么不加"架构代际" ordinal**：初版曾包含 `arch_gen` ∈ {0.00, 0.33, 0.67, 1.00} 四档，但 3 个训练 anchor 只覆盖前三档，MLP 可以把它当成离散 device-ID 直接查表：H200 的 arch_gen 和 H100 完全一样，泛化被"白送"；B200 的 1.00 在训练从未出现，MLP 外推不受约束。移除后模型只能依赖真实物理量（TFLOPS / 带宽 / L2 / SM 数），spec-only 零样本泛化的 claim 干净许多。即使 B200 外推效果不理想，这也是**有价值的 negative finding**（说明需要更多代际区分物理量），比伪装的 ordinal 诚实。
 
-H200 与 H100 同架构但规格不同（HBM 容量 80→141、带宽 3350→4800；L2/TFLOPS/SM/arch_gen 完全相同），是"同族内插值"泛化；B200 是全新架构，是"跨架构外推"泛化——两种难度的泛化测试使实验更有层次。
+H200 与 H100 同架构但规格不同（HBM 容量 80→141、带宽 3350→4800；fp16_tflops/L2/SM 完全相同），是"同族内插值"泛化；B200 是全新架构，是"跨架构外推"泛化——两种难度的泛化测试使实验更有层次。
 
 ---
 
@@ -278,7 +277,7 @@ s 编码为归一化的 2 维全局向量，在图级别 readout 之后拼接到
 | **Xinhao Tan** | Zero-shot 评估：V100+A100+H100 训练好的模型直接在 B200 上跑。**同表必须报告对照基线**：(a) Constant-h 基线、(b) HW-MLP only 基线、(c) Per-graph mean + GPU offset。这是诊断 h 分支是否真的在学硬件缩放的关键 | `zero_shot_results.csv` | 否 |
 | **Zhikai Hu** | 实现 few-shot 微调：取训练好的模型，分别用 50/100/200 个 H200/B200 样本微调。对比从头在目标 GPU 上训练的效果。输出误差改善曲线 | `few_shot_results.csv` | 否（CPU 训练即可） |
 
-**"H200 改成 few-shot"的原因**：评审发现 H200 vs H100 在 h 向量中只有 `memory_gb` 和 `bandwidth_gbs` 不同（`fp16_tflops / l2_cache_mb / sm_count / arch_gen` 完全相等），compute-bound 区 latency 本就 ≈ H100，zero-shot 在只有 3 个训练 anchor 时几乎是白送的。few-shot 更诚实。详见 [research_review.md §2.1](research_review.md)。
+**"H200 改成 few-shot"的原因**：评审发现 H200 vs H100 在 h 向量中只有 `memory_gb` 和 `bandwidth_gbs` 不同（其余 3 维 `fp16_tflops / l2_cache_mb / sm_count` 完全相等），compute-bound 区 latency 本就 ≈ H100，zero-shot 在只有 3 个训练 anchor 时几乎是白送的。few-shot 更诚实。详见 [research_review.md §2.1](research_review.md)。
 
 #### Day 10–11（周三–周四）：消融研究 & 跨模型评估
 
