@@ -7,11 +7,12 @@ GPU session.
 Phases:
   1. Load pre-extracted graph pkls for all 6 models
   2. Write a synthetic profiling CSV (30 rows = 5 GPUs × 6 models)
-  3. Parse CSV → list of ``Sample`` objects
+  3. Parse CSV → Sample via the shared ``load_samples_from_csv`` helper
   4. Build ``LatencyDataset`` → PyG ``DataLoader`` → batched ``Data``
   5. ``CostModel`` forward pass, check output shape / finiteness
   6. MSE loss, backward, verify all gradients are finite
   7. Run 2 epochs of the real training loop, assert no NaN
+  8. XGBoost + Roofline baselines fit/predict over the same samples
 
 This is the "gate" before Day 3 GPU profiling: if everything here
 passes, the profiler (Xinhao) and training (Zhikai) can plug into
@@ -29,9 +30,11 @@ from typing import Dict, List
 import torch
 from torch_geometric.loader import DataLoader
 
-from hetero_cost_model.data import LatencyDataset, Sample
+from hetero_cost_model.baselines import XGBoostBaseline, roofline_latency
+from hetero_cost_model.data import LatencyDataset, Sample, load_samples_from_csv
 from hetero_cost_model.graph import GraphRepr
 from hetero_cost_model.hardware import HARDWARE_REGISTRY
+from hetero_cost_model.metrics import mape, spearman
 from hetero_cost_model.model_zoo import MODELS
 from hetero_cost_model.models.gnn import CostModel
 from hetero_cost_model.strategies import InferenceConfig
@@ -40,6 +43,7 @@ from hetero_cost_model.training import TrainConfig, train
 
 GRAPH_DIR = Path("data/graphs")
 CSV_PATH = Path("/tmp/smoke_profiling.csv")
+TOTAL_PHASES = 8
 
 
 def _phase(i: int, total: int, title: str) -> None:
@@ -83,20 +87,9 @@ def write_synthetic_csv(graphs: Dict[str, GraphRepr]) -> int:
     return len(rows)
 
 
-def load_samples_from_csv(graphs: Dict[str, GraphRepr]) -> List[Sample]:
-    samples: List[Sample] = []
-    with open(CSV_PATH) as f:
-        for row in csv.DictReader(f):
-            p50 = float(row["p50_ms"])
-            if math.isnan(p50) or int(row["n_runs"]) == 0:
-                continue
-            samples.append(Sample(
-                graph=graphs[row["model_name"]],
-                config=InferenceConfig(int(row["batch_size"]), int(row["seq_len"])),
-                hardware=HARDWARE_REGISTRY[row["actual_gpu_name"]],
-                latency_ms=p50,
-                model_name=row["model_name"],
-            ))
+def load_samples(graphs: Dict[str, GraphRepr]) -> List[Sample]:
+    """Use the shared helper (data.load_samples_from_csv) + pre-loaded cache."""
+    samples = load_samples_from_csv(CSV_PATH, GRAPH_DIR, graphs=graphs)
     print(f"    constructed {len(samples)} Sample objects")
     return samples
 
@@ -128,22 +121,21 @@ def check_backward(model: CostModel, pred: torch.Tensor, batch) -> None:
 
 
 def main() -> int:
-    total_phases = 7
     print("=" * 68)
     print("End-to-end CPU smoke test (pre-GPU gate)")
     print("=" * 68)
 
-    _phase(1, total_phases, "Loading pre-extracted graph pkls...")
+    _phase(1, TOTAL_PHASES, "Loading pre-extracted graph pkls...")
     graphs = load_graphs()
 
-    _phase(2, total_phases, "Writing synthetic profiling CSV...")
+    _phase(2, TOTAL_PHASES, "Writing synthetic profiling CSV...")
     write_synthetic_csv(graphs)
 
-    _phase(3, total_phases, "Parsing CSV → Sample objects...")
-    samples = load_samples_from_csv(graphs)
+    _phase(3, TOTAL_PHASES, "Parsing CSV → Sample objects (shared helper)...")
+    samples = load_samples(graphs)
     assert len(samples) == len(MODELS) * len(HARDWARE_REGISTRY), "row count mismatch"
 
-    _phase(4, total_phases, "Building LatencyDataset + DataLoader...")
+    _phase(4, TOTAL_PHASES, "Building LatencyDataset + DataLoader...")
     ds = LatencyDataset(samples)
     loader = DataLoader(ds, batch_size=8, shuffle=True)
     batch = next(iter(loader))
@@ -153,19 +145,33 @@ def main() -> int:
         f"s={tuple(batch.s.shape)}  h={tuple(batch.h.shape)}  y={tuple(batch.y.shape)}"
     )
 
-    _phase(5, total_phases, "CostModel (GAT) forward pass...")
+    _phase(5, TOTAL_PHASES, "CostModel (GAT) forward pass...")
     model = CostModel(hidden_dim=64, num_layers=2, heads=4)   # small for speed
     pred = check_forward(model, batch)
 
-    _phase(6, total_phases, "MSE backward pass, gradient finiteness...")
+    _phase(6, TOTAL_PHASES, "MSE backward pass, gradient finiteness...")
     check_backward(model, pred, batch)
 
-    _phase(7, total_phases, "Training loop, 2 epochs on full dataset...")
+    _phase(7, TOTAL_PHASES, "Training loop, 2 epochs on full dataset...")
     fresh = CostModel(hidden_dim=64, num_layers=2, heads=4)
     cfg = TrainConfig(epochs=2, batch_size=8, lr=1e-3, ranking_lambda=0.1, device="cpu")
     history = train(fresh, ds, cfg)
     assert all(math.isfinite(h) for h in history), f"NaN in loss history: {history}"
     print(f"    epoch losses: {[f'{h:.3f}' for h in history]}")
+
+    _phase(8, TOTAL_PHASES, "Baselines: XGBoost + Roofline fit/predict...")
+    xgb = XGBoostBaseline(n_estimators=50, max_depth=4).fit(samples)
+    xgb_pred = xgb.predict(samples).tolist()
+    xgb_targets = [s.latency_ms for s in samples]
+    roof_pred = [roofline_latency(s.graph, s.config, s.hardware) for s in samples]
+    print(
+        f"    XGBoost   — MAPE={mape(xgb_pred,  xgb_targets) * 100:6.2f}%  "
+        f"Spearman={spearman(xgb_pred,  xgb_targets):.3f}   (in-sample fit)"
+    )
+    print(
+        f"    Roofline  — MAPE={mape(roof_pred, xgb_targets) * 100:6.2f}%  "
+        f"Spearman={spearman(roof_pred, xgb_targets):.3f}   (no training)"
+    )
 
     print("\n" + "=" * 68)
     print("END-TO-END SMOKE TEST PASSED")

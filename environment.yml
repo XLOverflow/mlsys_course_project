@@ -9,6 +9,7 @@ dependencies:
   - pandas
   - scipy
   - scikit-learn
+  - xgboost
   - pytest
   - tqdm
   - pytorch>=2.1
