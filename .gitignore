@@ -76,7 +76,11 @@ dmypy.json
 Thumbs.db
 
 # Project artifacts
-data/
+# data/ runtime output is ignored, EXCEPT data/graphs/ (pre-extracted computation graphs
+# are checked in for team review — see data/graphs/README.md for regen instructions)
+data/*
+!data/graphs/
+!data/graphs/**
 datasets/
 *.csv
 *.parquet
