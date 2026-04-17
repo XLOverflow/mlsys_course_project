@@ -265,7 +265,23 @@ def _resolve_spec(name: str) -> ModelSpec:
 def _config_grid(
     specs: Iterable[ModelSpec], batch_sizes: List[int], seq_lens: List[int],
 ) -> List[Tuple[ModelSpec, int, int]]:
-    return [(spec, bs, sl) for spec in specs for bs in batch_sizes for sl in seq_lens]
+    """Cartesian product, with one filter: skip seqs that exceed the model's
+    architectural max. Those failures are model-capability limits (e.g. BERT's
+    max_position_embeddings=512), not hardware feasibility — they'd appear in
+    the CSV as NaN rows indistinguishable from real OOMs, contaminating any
+    future feasibility head we train on those labels."""
+    grid: List[Tuple[ModelSpec, int, int]] = []
+    skipped = 0
+    for spec in specs:
+        for bs in batch_sizes:
+            for sl in seq_lens:
+                if sl > spec.max_seq_len:
+                    skipped += 1
+                    continue
+                grid.append((spec, bs, sl))
+    if skipped:
+        print(f"  (skipped {skipped} configs that exceed model max_seq_len)")
+    return grid
 
 
 if __name__ == "__main__":

@@ -29,14 +29,22 @@ class ModelSpec:
     hf_id: str     # HuggingFace hub identifier for ``from_pretrained``
     family: str    # "decoder" | "encoder" | "enc-dec"
 
+    # Architectural maximum input length (== ``max_position_embeddings``
+    # for models with learned absolute position embeddings). Configs with
+    # ``seq_len > max_seq_len`` should be pre-filtered from the profiling
+    # grid — running them produces a model-capability failure, NOT a
+    # hardware OOM, and carries no signal about hardware feasibility.
+    # GPT-2 and T5 are effectively unbounded for our 1024-length grid.
+    max_seq_len: int = 10**9
+
 
 MODELS: List[ModelSpec] = [
-    ModelSpec("gpt2-small",  "gpt2",               "decoder"),
-    ModelSpec("gpt2-medium", "gpt2-medium",        "decoder"),
-    ModelSpec("gpt2-large",  "gpt2-large",         "decoder"),
-    ModelSpec("bert-base",   "bert-base-uncased",  "encoder"),
-    ModelSpec("bert-large",  "bert-large-uncased", "encoder"),
-    ModelSpec("t5-small",    "t5-small",           "enc-dec"),
+    ModelSpec("gpt2-small",  "gpt2",               "decoder",  max_seq_len=1024),
+    ModelSpec("gpt2-medium", "gpt2-medium",        "decoder",  max_seq_len=1024),
+    ModelSpec("gpt2-large",  "gpt2-large",         "decoder",  max_seq_len=1024),
+    ModelSpec("bert-base",   "bert-base-uncased",  "encoder",  max_seq_len=512),
+    ModelSpec("bert-large",  "bert-large-uncased", "encoder",  max_seq_len=512),
+    ModelSpec("t5-small",    "t5-small",           "enc-dec",  max_seq_len=1024),
 ]
 
 MODEL_BY_NAME: Dict[str, ModelSpec] = {m.name: m for m in MODELS}
