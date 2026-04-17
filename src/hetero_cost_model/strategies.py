@@ -11,8 +11,11 @@ from typing import List, Sequence, Tuple
 
 CONFIG_FEATURE_DIM: int = 2  # [batch_size_norm, seq_len_norm]
 
+# Normalization upper bounds — must cover the largest value in the profiling
+# config grid (see data_collection_plan.md §2.3). Keep components in [0, 1]
+# so they share scale with the normalized hardware vector ``h``.
 _MAX_BATCH: float = 16.0
-_MAX_SEQ: float = 256.0
+_MAX_SEQ: float = 512.0
 
 
 @dataclass(frozen=True)
@@ -27,10 +30,15 @@ class InferenceConfig:
 
 
 def config_grid(
-    batch_sizes: Sequence[int] = (1, 4, 8),
-    seq_lens: Sequence[int] = (64, 128, 256),
+    batch_sizes: Sequence[int] = (1, 2, 4, 8, 16),
+    seq_lens: Sequence[int] = (64, 128, 256, 512),
 ) -> List[InferenceConfig]:
-    """Return the Cartesian product of batch sizes and sequence lengths."""
+    """Return the Cartesian product of batch sizes and sequence lengths.
+
+    Defaults match ``data_collection_plan.md §2.3`` (20 configs per model).
+    Smaller grids can be passed explicitly for large models that OOM on
+    bigger (batch, seq) combinations.
+    """
     return [
         InferenceConfig(b, s)
         for b in batch_sizes
