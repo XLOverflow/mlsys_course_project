@@ -1,4 +1,4 @@
-# CPU/GPU 异构 LLM 推理优化 — 泛化学习代价模型
+# 跨异构 GPU 的 LLM 推理延迟泛化代价模型
 
 ## 两周冲刺执行计划
 
@@ -6,13 +6,13 @@
 
 **时间跨度**：2026年4月14日 – 4月28日
 
-**硬件资源**：V100 (1-2卡) | H100 (1-2卡) | B200 (1-2卡) — 共享排队
+**硬件资源**：V100 (PSC) | A100-40GB (Modal) | H100 (PSC) | H200 (Modal) | B200 (Modal)
 
 ---
 
 ## 1. 总体策略
 
-原计划为4周，现压缩至2周。核心目标不变：构建一个图级别(graph-level)的学习代价模型 **f(G, s, h) → T̂**，能够在异构 CPU/GPU 环境中预测端到端推理延迟，并在不同工作负载和硬件上展示泛化能力。
+原计划为4周，现压缩至2周。核心目标不变：构建一个图级别(graph-level)的学习代价模型 **f(G, s, h) → T̂**，给定模型计算图 G、推理配置 s（batch size、seq len）、目标 GPU 硬件向量 h，预测端到端推理延迟，并在不同工作负载和未见过的 GPU 上展示泛化能力。
 
 **关键调整思路**：
 
@@ -37,7 +37,7 @@
 
 - **核心思路**：基于梯度下降的张量程序优化框架，构建可微分的延迟预测函数，替代传统的组合搜索
 - **关键指标**：达到90%峰值性能的搜索时间比 Ansor 快5.8倍
-- **与我们的区别**：Felix 聚焦于单设备上的 schedule 调优。我们关注异构 CPU/GPU 放置决策，是更高层次的调度问题
+- **与我们的区别**：Felix 聚焦于单设备上的 schedule 调优。我们关注跨 GPU 硬件的端到端延迟预测，是更高层次的硬件选择和配置决策问题
 
 ### 2.3 Helix (ASPLOS 2025)
 
@@ -48,7 +48,7 @@
 ### 2.4 Q-Infer (ACM TACO 2025)
 
 - **核心思路**：混合 GPU-CPU 异构并行推理，结合稀疏性感知的自适应动态调度
-- **与我们的区别**：Q-Infer 使用手工设计的调度规则，我们学习预测策略的代价
+- **与我们的区别**：Q-Infer 针对 CPU+GPU 混合执行设计手工调度规则；我们聚焦于跨 GPU 硬件代际的端到端延迟泛化预测，问题设定不同
 
 ### 2.5 Ansor / MetaSchedule (OSDI'20 / NeurIPS'22)
 
@@ -59,17 +59,19 @@
 
 ## 3. 硬件资源与特征向量设计
 
-三种 GPU 横跨三代架构，是硬件泛化的理想测试平台：
+五种 GPU 横跨四代架构（Volta → Ampere → Hopper → Blackwell），构成训练集（3个）和泛化测试集（2个）：
 
-| 特征 | V100 (Volta) | H100 (Hopper) | B200 (Blackwell) |
-|------|-------------|---------------|-----------------|
-| FP16 Tensor TFLOPS | 125 | 1,979 | ~4,500 (FP8: 9,000) |
-| HBM 容量 | 32 GB (HBM2) | 80 GB (HBM3) | 180 GB (HBM3e) |
-| 显存带宽 | 900 GB/s | 3,350 GB/s | 8,000 GB/s |
-| 互连 | PCIe 3.0 / NVLink 2.0 | PCIe 5.0 / NVLink 4.0 | PCIe 5.0 / NVLink 5.0 |
-| 特征向量 h 示例 | [125, 32, 900, ...] | [1979, 80, 3350, ...] | [4500, 180, 8000, ...] |
+| 特征 | V100 (Volta) | A100-40GB (Ampere) | H100 (Hopper) | H200 (Hopper+) | B200 (Blackwell) |
+|------|-------------|-------------------|---------------|----------------|-----------------|
+| **角色** | 训练 (PSC) | 训练 (Modal) | 训练 (PSC) | zero-shot 测试 (Modal) | few-shot 测试 (Modal) |
+| FP16 TFLOPS | 125 | 312 | 1,979 | 1,979 | ~4,500 |
+| HBM 容量 | 32 GB | 40 GB | 80 GB | 141 GB | 180 GB |
+| 显存带宽 | 900 GB/s | 1,555 GB/s | 3,350 GB/s | 4,800 GB/s | 8,000 GB/s |
+| PCIe 带宽 | 16 GB/s | 64 GB/s | 64 GB/s | 64 GB/s | 128 GB/s |
+| SM 数量 | 80 | 108 | 132 | 132 | 160 |
+| 特征向量 h | [125, 32, 900, 16, 80] | [312, 40, 1555, 64, 108] | [1979, 80, 3350, 64, 132] | [1979, 141, 4800, 64, 132] | [4500, 180, 8000, 128, 160] |
 
-**硬件特征向量 h 包含**：峰值 TFLOPS（按精度）、HBM 容量、显存带宽、PCIe 带宽、CPU 规格（核心数、频率、缓存大小）。所有数值做归一化处理，使模型能通过连续特征感知硬件差异，而非依赖架构特定的离散编码。
+**硬件特征向量 h（5维）**：峰值 FP16 TFLOPS、HBM 容量、显存带宽、PCIe 带宽、SM 数量。所有数值做归一化处理，使模型能通过连续特征感知硬件差异。H200 与 H100 同架构但规格不同，是"同族内插值"泛化；B200 是全新架构，是"跨架构外推"泛化——两种难度的泛化测试使实验更有层次。
 
 ---
 
@@ -87,15 +89,16 @@
 
 边表示数据依赖关系，整体构成一个有向无环图(DAG)，可直接输入 GNN。
 
-### 4.2 执行策略编码
+### 4.2 推理配置编码
 
-执行策略 s 定义为图上每个算子的设备放置决策：
+推理配置 s 定义为一次推理的服务参数，与模型结构无关：
 
-- 每个算子分配到 CPU 或 GPU
-- 批大小 (batch size)
-- 序列长度配置
+- **batch size**：请求批大小（1 / 4 / 8 / 16）
+- **sequence length**：输入序列长度（64 / 128 / 256）
 
-两周范围内，我们聚焦于**算子级别的 CPU/GPU 放置**作为核心策略维度。
+s 编码为归一化的 2 维全局向量，在图级别 readout 之后拼接到 MLP head 的输入，而不广播到每个节点。这样节点特征只编码算子结构信息，s 和 h 在全局层面影响延迟预测，反映它们的物理意义。
+
+**排序意义**：对同一模型 G，不同 (s, h) 组合的延迟排序即为"在哪块 GPU 上、用什么 batch 跑最快"的决策依据。
 
 ### 4.3 代价模型架构
 
@@ -104,15 +107,17 @@
 #### 主架构：GAT（Graph Attention Network）
 
 ```
-输入: 标注计算图 G (节点特征 + 边)  +  策略 s  +  硬件向量 h
+输入: 标注计算图 G (节点特征 + 边)  +  配置 s=(bs,sl)  +  硬件向量 h
   │
-  ├── 节点嵌入: 算子特征 ⊕ 硬件向量 h ⊕ 放置标记（来自 s）
+  ├── 节点嵌入: 算子特征（op_type, shapes, FLOPs, memory）
   │
   ├── 3层 GAT, hidden_dim=128, 4 heads
   │
-  ├── 图级别 Readout: mean pooling + max pooling 拼接
+  ├── 图级别 Readout: mean pooling + max pooling 拼接 → 256维
   │
-  ├── 2层 MLP Head (256 → 128 → 1)
+  ├── 拼接全局特征: [图表示 | s(2维) | h(5维)] → 263维
+  │
+  ├── 2层 MLP Head (263 → 128 → 1)
   │
   └── 输出: 预测延迟 T̂
 ```
@@ -148,8 +153,8 @@
 
 ### 4.4 训练策略
 
-- **Phase 1**：在 V100 + H100 数据上训练，学习跨硬件的预测能力
-- **Phase 2**：在 B200 上做 zero-shot 评估（不用 B200 训练数据），然后用少量 B200 样本做 few-shot 微调，测量改善幅度
+- **Phase 1**：在 V100 + A100 + H100 数据上训练，学习跨 GPU 代际的预测能力
+- **Phase 2**：在 H200 上做 zero-shot 评估（同架构、不同规格，测试插值泛化）；在 B200 上做 zero-shot 评估（全新架构，测试外推泛化）；然后用少量 B200 样本做 few-shot 微调，测量改善幅度
 
 ---
 
@@ -161,7 +166,7 @@
 
 | Baseline | 做法 | 实现成本 | 对比意义 |
 |----------|------|----------|----------|
-| **Roofline 分析模型** | 延迟 = max(FLOPs / 峰值TFLOPS, 数据量 / 带宽) + CPU-GPU 传输开销估算 | 约50行代码，纯公式 | 证明学习方法比手写公式更准 |
+| **Roofline 分析模型** | 延迟 = max(FLOPs / 峰值TFLOPS, 数据量 / 带宽)，对每个算子求和 | 约50行代码，纯公式 | 证明学习方法比手写公式更准 |
 | **随机选择** | 从候选策略中 `random.choice()` | 一行代码 | 策略排序能力的下界 |
 
 更复杂的模型变体对比（MLP vs GNN、Graph Transformer vs GAT 等）归入消融实验，属于模型设计层面的分析，不作为主 baseline。
@@ -169,18 +174,23 @@
 ### 5.2 核心实验对比逻辑
 
 ```
-实验1 — 预测精度:
-  GNN Cost Model  vs  Roofline  vs  Random  →  MAPE / Spearman ρ
+实验1 — 预测精度（已见硬件）:
+  GNN Cost Model  vs  Roofline  vs  Linear Regression  →  MAPE / Spearman ρ
+  在 V100+A100+H100 hold-out 集上评估
 
-实验2 — 硬件泛化:
-  V100+H100 上训练 → B200 zero-shot  vs  Few-shot (50/100/200 samples)
+实验2 — 硬件泛化（核心贡献）:
+  训练: V100 + A100 + H100
+  → H200 zero-shot（同架构插值）: MAPE / Spearman ρ
+  → B200 zero-shot（跨架构外推）: MAPE / Spearman ρ
+  → B200 few-shot (50/100/200 samples): 误差改善幅度
 
 实验3 — 工作负载泛化:
   规模泛化: GPT-2 Small 上训练 → GPT-2 Medium/Large 上测试
   架构类型泛化: Decoder-only (GPT-2) 上训练 → Encoder-only (BERT) / Enc-Dec (T5) 上测试
 
 消融实验（模型设计层面）:
-  (1) 移除硬件特征 h  (2) MLP 替换 GNN  (3) 移除策略特征 s  (4) Graph Transformer 替换 GAT
+  (1) 移除硬件特征 h  (2) MLP 替换 GNN（去掉图结构）
+  (3) 移除推理配置 s  (4) Graph Transformer 替换 GAT
 ```
 
 ---
@@ -194,7 +204,7 @@
 | 负责人 | 任务 | 交付物 | 需要GPU |
 |--------|------|--------|---------|
 | **Xiang Li** | 构建 ONNX/torch.fx 图提取管线；实现节点特征提取（算子类型、形状、FLOPs、内存）；在 GPT-2、BERT、T5 上测试 | `graph_extractor.py` | 否 |
-| **Xinhao Tan** | 构建 profiling 测试框架：给定模型 + 放置策略 + 硬件，运行 N 次推理并记录延迟；实现策略枚举（关键子图的所有 CPU/GPU 放置组合） | `profiler.py` + `strategy_gen.py` | 否（本地测试） |
+| **Xinhao Tan** | 构建 profiling 测试框架：给定模型 + 推理配置 (batch_size, seq_len) + 目标 GPU，运行 N 次推理并记录延迟；实现配置网格枚举（batch × seq_len 笛卡尔积） | `profiler.py` + `config_grid.py` | 否（本地 CPU 测试） |
 | **Zhikai Hu** | 用 PyG 实现 GNN 代价模型（GAT/GraphSAGE）；定义硬件特征向量 schema；搭建训练循环（MSE + ranking loss） | `cost_model.py` + `train.py` | 否 |
 
 **Day 2 检查点**：三人在本地完成各自模块的单元测试，确认接口可以对接。
@@ -203,11 +213,11 @@
 
 | 负责人 | 任务 | 交付物 | 需要GPU |
 |--------|------|--------|---------|
-| **Xiang Li** | 【V100】Profile：GPT-2 (small/medium)、BERT (base/large)、T5-small。每个模型 × 10-20种放置策略 × 3种batch size。目标：500+ 样本 | `v100_data.csv` | V100 × 1-2 |
-| **Xinhao Tan** | 【H100】相同的模型/策略矩阵在 H100 上运行。同时收集所有模型的纯 CPU baseline。目标：500+ 样本 | `h100_data.csv` | H100 × 1-2 |
+| **Xiang Li** | 【V100, PSC】Profile：6个模型 × (batch∈{1,4,8}) × (seq∈{64,128,256}) = 每模型54条。目标：300+ 样本 | `v100_data.csv` | V100 |
+| **Xinhao Tan** | 【H100, PSC】同配置矩阵在 H100 上运行；同时在 Modal 提交 A100 job（即提交即运行，无需排队）。目标：600+ 样本（H100+A100合计） | `h100_data.csv` + `a100_data.csv` | H100 (PSC) + A100 (Modal) |
 | **Zhikai Hu** | 构建数据管线：合并 CSV、特征归一化、构造 PyG Data 对象。准备训练/验证/测试集（按模型类型分层抽样） | `dataset.py` + `data/` | 否 |
 
-**关键提示**：每个 profiling job 设计为自包含脚本，一次 GPU 预约运行3-4小时，覆盖一个模型族的全部配置。在排队前彻底本地调试，确保 GPU 时间100%用于 profiling、0%用于 debug。
+**关键提示**：profiling 配置矩阵统一，所有 GPU 跑完全相同的 (模型, batch_size, seq_len) 组合，结果 CSV 只有 gpu 列不同，便于直接对比。Modal job 即提交即运行，A100 数据与 H100 数据可并行收集。
 
 #### Day 5–7（周五–周日）：Baseline 训练与验证
 
@@ -216,7 +226,7 @@
 | **三人协作** | 在 V100+H100 合并数据上训练代价模型。评估：(1) hold-out集预测 MAPE，(2) 策略排序的 Spearman 秩相关系数，(3) 与 Roofline baseline 对比。迭代优化模型架构 | 训练好的模型 + baseline 指标 | 任意 GPU（训练很轻量） |
 | **Xiang Li** | 实现 Roofline 分析 baseline；在相同测试集上跑 Roofline 和随机选择，生成对比数据 | `baseline_results.csv` | 否 |
 
-> **Week 1 里程碑**：工作的代价模型在 V100+H100 上 MAPE < 15%；在至少一个模型上展示对比 naive 放置的延迟改善。
+> **Week 1 里程碑**：工作的代价模型在 V100+A100+H100 上 MAPE < 15%；Spearman ρ > 0.85；优于 Roofline baseline。
 
 ---
 
@@ -226,15 +236,15 @@
 
 | 负责人 | 任务 | 交付物 | 需要GPU |
 |--------|------|--------|---------|
-| **Xiang Li** | 【B200】收集 profiling 数据（相同模型/策略矩阵）。数据拆分：80% 用于 zero-shot 评估，20% 用于 few-shot 微调 | `b200_data.csv` | B200 × 1-2 |
-| **Xinhao Tan** | Zero-shot 评估：将 V100+H100 训练好的模型直接在 B200 测试集上运行，测量 MAPE 和秩相关系数。**这是核心泛化实验** | `zero_shot_b200_results` | 否 |
-| **Zhikai Hu** | 实现 few-shot 微调：取训练好的模型，分别用 50/100/200 个 B200 样本微调。对比从头在 B200 上训练 | `few_shot_transfer_results` | 否（CPU训练即可） |
+| **Xiang Li** | 【Modal】同时提交 H200 + B200 profiling job（相同配置矩阵，即提交即运行）。数据拆分：全部用于 zero-shot 评估，B200 的20%留给 few-shot 微调 | `h200_data.csv` + `b200_data.csv` | H200 + B200 (Modal) |
+| **Xinhao Tan** | Zero-shot 评估：V100+A100+H100 训练好的模型直接在 H200 和 B200 测试集上运行，对比两种泛化难度的 MAPE 和 Spearman ρ。**这是核心泛化实验** | `zero_shot_results.csv` | 否 |
+| **Zhikai Hu** | 实现 few-shot 微调：取训练好的模型，分别用 50/100/200 个 B200 样本微调。对比从头在 B200 上训练 | `few_shot_transfer_results.csv` | 否（CPU训练即可） |
 
 #### Day 10–11（周三–周四）：消融研究 & 跨模型评估
 
 | 负责人 | 任务 | 交付物 | 需要GPU |
 |--------|------|--------|---------|
-| **Xiang Li** | 消融实验：(1) 移除硬件特征 h；(2) 用 MLP 替换 GNN（去掉图结构）；(3) 移除策略特征 s；(4) 用 Graph Transformer 替换 GAT（对比架构选择） | `ablation_table.csv` | 否 |
+| **Xiang Li** | 消融实验：(1) 移除硬件特征 h；(2) 用 MLP 替换 GNN（去掉图结构）；(3) 移除推理配置 s；(4) 用 Graph Transformer 替换 GAT | `ablation_table.csv` | 否 |
 | **Xinhao Tan** | 跨模型泛化：(1) 规模泛化——GPT-2 Small 上训练 → GPT-2 Medium/Large 上测试；(2) 架构类型泛化——decoder-only 上训练 → encoder-only (BERT) 和 encoder-decoder (T5) 上测试 | `cross_model_results` | V100或H100（如需新profile） |
 | **Zhikai Hu** | 决策有效性：对每个测试模型，按预测代价排序所有策略，对比 top-K 预测 vs 实际 top-K（NDCG / top-1准确率） | `ranking_eval_results` | 否 |
 
@@ -259,25 +269,29 @@
 每个 profiling job 是一个自包含脚本：
 
 ```
-加载模型 → 遍历放置策略列表 → 每个配置运行 (100次warmup + 500次测量) → 保存结果到CSV
+加载模型 → 遍历 (batch_size, seq_len) 配置网格 → 每个配置运行 (10次warmup + 50次测量) → 保存结果到CSV
 ```
 
-一次 GPU 预约可以收集一个模型族所有配置的数据，无需重新排队。
+单次 GPU session 约 1-1.5 小时即可覆盖全部 6 个模型 × 所有配置。
 
-### 排队计划
+### 排队/提交计划
 
-- **Week 1 Day 3-4**：Xiang 排 V100，Xinhao 排 H100，**同时**提交，互不依赖
-- **Week 2 Day 8**：Xiang 排 B200 任务
-- 尽量利用工作日晚间和周末时段，排队竞争较小
-- 所有脚本在排队前已完全本地调试通过
+| 时间 | 任务 | 平台 | 谁负责 |
+|------|------|------|--------|
+| Day 3-4 | V100 profiling | PSC（排队） | Xiang |
+| Day 3-4 | H100 profiling | PSC（排队） | Xinhao |
+| Day 4 | A100 profiling | Modal（即时） | Xinhao |
+| Day 8 | H200 + B200 profiling | Modal（即时） | Xiang |
+
+Modal job 无需排队，提交后几分钟内开始运行，是 PSC 排队的天然缓冲。
 
 ### 备选方案
 
-如果 B200 排队时间过长：
+如果 PSC V100/H100 排队超过 2 天：
 
-1. 仅在 B200 上 profile 最小子集（GPT-2 small + BERT-base）
-2. 使用 V100→H100 趋势外推的合成 B200 数据点
-3. 在报告中诚实讨论局限性
+1. 先用 Modal A100 数据开始训练（A100 即时可得）
+2. PSC 数据到位后继续补充训练集
+3. H200 和 B200 不受影响（均在 Modal）
 
 ---
 
@@ -285,10 +299,10 @@
 
 | 指标 | 定义 | 目标 |
 |------|------|------|
-| **预测 MAPE** | 预测延迟 vs 实际延迟的平均绝对百分比误差 | 已见硬件 < 15%；B200 zero-shot < 25% |
-| **Spearman 秩相关** | 预测排序 vs 实际策略排序的秩相关系数 | 已见硬件 > 0.85；B200 > 0.70 |
-| **Top-1 准确率** | 正确识别最优策略的比例 | > 60%（选中实际最优或误差在5%以内） |
-| **优化加速比** | 模型选出的策略 vs naive 全GPU baseline 的延迟比 | 至少2个模型族上 > 1.1x |
+| **预测 MAPE** | 预测延迟 vs 实际延迟的平均绝对百分比误差 | 已见硬件 < 15%；H200 zero-shot < 20%；B200 zero-shot < 30% |
+| **Spearman 秩相关** | 预测配置排序 vs 实际排序的秩相关系数 | 已见硬件 > 0.85；H200 > 0.75；B200 > 0.65 |
+| **Top-1 准确率** | 正确识别最优 (batch, seq_len) 配置的比例 | > 70%（选中实际最优或误差在5%以内） |
+| **跨硬件泛化差距** | H200 vs B200 的 zero-shot MAPE 对比 | H200 应明显优于 B200，验证"同架构插值 < 跨架构外推"的假设 |
 | **Few-Shot 迁移效果** | 用 N 个 B200 样本微调后 MAPE 改善幅度 | 50个样本应消除 > 50% 的 zero-shot 误差 |
 
 ---
@@ -323,7 +337,7 @@
 ## 11. 最终交付物清单
 
 1. **项目报告**（8-10页，LaTeX）：Introduction、Problem Definition、Related Work、Method、Experiments（5+表格/图表）、Ablation Studies、Conclusion
-2. **代码库**（GitHub）：`graph_extractor.py`、`profiler.py`、`cost_model.py`、`train.py`、`evaluate.py`、README（含复现指南）
-3. **Profiling 数据集**：CSV 文件，V100 / H100 / B200 上共 1500+ 条延迟测量记录
+2. **代码库**（GitHub）：`graph_extractor.py`、`profiler.py`、`config_grid.py`、`cost_model.py`、`train.py`、`evaluate.py`、`scripts/run_modal.py`、README（含复现指南）
+3. **Profiling 数据集**：CSV 文件，V100(PSC) / A100(Modal) / H100(PSC) / H200(Modal) / B200(Modal) 共 1500+ 条延迟测量记录
 4. **训练模型**：最优代价模型 + 各消融变体的保存权重
 5. **实验脚本**：一键复现所有报告中数据的脚本
