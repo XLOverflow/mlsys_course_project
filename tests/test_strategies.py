@@ -1,50 +1,37 @@
-from hetero_cost_model.graph import GraphRepr, NodeFeature
 from hetero_cost_model.strategies import (
-    enumerate_strategies,
-    full_device,
-    identify_strategic_nodes,
-    random_strategies,
+    CONFIG_FEATURE_DIM,
+    InferenceConfig,
+    config_grid,
+    config_pairs,
 )
 
 
-def _fake_graph(n: int = 8) -> GraphRepr:
-    nodes = [
-        NodeFeature(
-            name=f"n{i}",
-            op_type="linear",
-            input_shapes=[(1, 4)],
-            output_shape=(1, 4),
-            dtype="float32",
-            flops=float(i + 1) * 10.0,
-            memory_bytes=100.0,
-        )
-        for i in range(n)
-    ]
-    edges = [(i, i + 1) for i in range(n - 1)]
-    return GraphRepr(nodes=nodes, edges=edges, name="fake")
+def test_config_vector_normalized():
+    c = InferenceConfig(batch_size=4, seq_len=128)
+    vec = c.to_vector()
+    assert len(vec) == CONFIG_FEATURE_DIM
+    assert all(0.0 <= v <= 1.0 for v in vec)
 
 
-def test_identify_strategic_picks_highest_flops():
-    g = _fake_graph(8)
-    hot = identify_strategic_nodes(g, k=3)
-    assert hot[0] == 7
-    assert set(hot) == {5, 6, 7}
+def test_config_vector_scales_with_batch():
+    small = InferenceConfig(batch_size=1, seq_len=128).to_vector()
+    large = InferenceConfig(batch_size=8, seq_len=128).to_vector()
+    assert large[0] > small[0]
 
 
-def test_enumerate_size_matches_combinations():
-    g = _fake_graph(8)
-    strats = enumerate_strategies(g, strategic_k=3)
-    assert len(strats) == 2 ** 3
-    assert all(len(s.placements) == 8 for s in strats)
+def test_config_grid_cartesian_product():
+    grid = config_grid(batch_sizes=(1, 4), seq_lens=(64, 128, 256))
+    assert len(grid) == 2 * 3
+    assert all(isinstance(c, InferenceConfig) for c in grid)
 
 
-def test_enumerate_with_batch_grid():
-    g = _fake_graph(6)
-    strats = enumerate_strategies(g, strategic_k=2, batch_sizes=(1, 4))
-    assert len(strats) == 2 ** 2 * 2
+def test_config_grid_default():
+    grid = config_grid()
+    assert len(grid) == 3 * 3  # (1,4,8) x (64,128,256)
 
 
-def test_random_and_full_device():
-    g = _fake_graph(5)
-    assert len(random_strategies(g, 4, seed=1)) == 4
-    assert full_device(g, device=1).num_gpu_ops() == 5
+def test_config_pairs_count():
+    grid = config_grid(batch_sizes=(1, 4), seq_lens=(64, 128))
+    pairs = config_pairs(grid)
+    n = len(grid)
+    assert len(pairs) == n * (n - 1) // 2

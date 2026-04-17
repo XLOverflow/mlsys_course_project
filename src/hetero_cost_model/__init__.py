@@ -2,14 +2,14 @@
 
 Subpackages
 -----------
-- ``hardware``    : GPU/CPU hardware spec registry and feature vectors.
+- ``hardware``    : GPU hardware registry and feature vectors.
 - ``graph``       : torch.fx-based computation-graph extraction.
-- ``strategies``  : per-op CPU/GPU placement strategy generator.
+- ``strategies``  : inference-config helpers (batch size / sequence length).
 - ``profiling``   : wall-clock latency measurement primitives.
-- ``data``        : (graph, strategy, hardware, latency) → PyG dataset.
+- ``data``        : (graph, config, hardware, latency) → PyG dataset.
 - ``models``      : GNN / Graph-Transformer / MLP cost-model architectures.
 - ``training``    : training loop, losses, and hyper-parameter config.
-- ``baselines``   : Roofline analytical model and random selector.
+- ``baselines``   : Roofline analytical model.
 - ``metrics``     : MAPE / Spearman ρ / top-k / NDCG evaluation metrics.
 
 The top-level package intentionally does *not* eagerly import submodules that
