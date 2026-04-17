@@ -1,0 +1,18 @@
+name: mlsys
+channels:
+  - conda-forge
+  - pytorch
+dependencies:
+  - python=3.11
+  - pip
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - pytest
+  - tqdm
+  - pytorch>=2.1
+  - pip:
+      - torch_geometric>=2.4
+      - "transformers>=4.35,<4.52"   # v5 removed transformers.utils.fx; 4.52+ masking_utils.py uses torch.vmap (incompatible with HFTracer). 4.46.3 verified in Day 1 smoke test.
+      - modal

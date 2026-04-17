@@ -309,15 +309,32 @@ def profile_on_b200():
 
 ```
 scripts/extract_graphs.py
-  → 对每个 model_name，用 transformers.utils.fx.symbolic_trace 提取 GraphRepr
-    （不是 torch.fx.symbolic_trace，后者在 HF 模型上会挂）
+  → 对每个 model_name，调 extract_graph(model, inputs, hf_input_names=["input_ids"])
+    走 transformers.utils.fx.symbolic_trace（需要 transformers<4.52）
   → 序列化保存到 data/graphs/{model_name}.pkl
   → 打印节点数、FLOPs 总量，做 sanity check
 ```
 
-**Day 1 必须完成的 smoke test**：对 gpt2-small / gpt2-medium / gpt2-large / bert-base / bert-large / t5-small 全部调用 `extract_graph`，任何一个挂掉当场决定丢掉该模型或切 ONNX 导出。不通过 smoke test **不得**进入 Day 3 profiling。
+**Smoke test —— ✅ 2026-04-17 已完成，6/6 PASS**（`scripts/smoke_test_graphs.py`）
 
-这一步在本地 CPU 上跑，不需要 GPU，提前准备好。
+```
+gpt2-small:  1247 nodes / 1599 edges / 2.52e+09 FLOPs
+gpt2-medium: 2471 nodes / 3171 edges / 3.43e+09 FLOPs
+gpt2-large:  3695 nodes / 4743 edges / 4.37e+09 FLOPs
+bert-base:    529 nodes /  642 edges / 7.02e+09 FLOPs
+bert-large:  1021 nodes / 1242 edges / 2.15e+10 FLOPs
+t5-small:    1159 nodes / 1404 edges / 3.91e+09 FLOPs
+```
+
+**守护措施（每次环境变更必做）**：
+
+- `pip install -r requirements.txt` 或 `conda env create -f environment.yml` 之后
+- `transformers` 被任何原因升级之后
+- 新成员入组、或迁移到新机器（PSC / Modal 容器）之后
+
+都必须先 `python scripts/smoke_test_graphs.py`，6/6 PASS 才可进入 profiling。
+
+这一步在本地 CPU 上跑，不需要 GPU。
 
 ---
 
@@ -367,8 +384,8 @@ for each row in all_profiling.csv:
 4. **同一个 model_name 在不同 batch_size 下图 G 是否相同？**
    → 是。`torch.fx` trace 出来的图结构与 batch_size 无关（batch 是动态维度）。batch_size 只影响 s 向量，不影响 G
 
-5. **fx 能否 trace 出 HF 的 GPT-2/BERT/T5（Day 1 硬阻塞项）**
-   → 必须用 `transformers.utils.fx.symbolic_trace(model, input_names=["input_ids"])`，不是 `torch.fx.symbolic_trace`。T5 带 past_key_values 时仍可能失败，Day 1 smoke test 决定是否保留 T5
+5. **fx 能否 trace 出 HF 的 GPT-2/BERT/T5** —— ✅ 已解决 2026-04-17
+   → 用 `extract_graph(model, inputs, hf_input_names=[...])` 走 `transformers.utils.fx.symbolic_trace`；`transformers` pin 到 `>=4.35,<4.52`（4.46.3 已验证）。T5 用 `["input_ids", "decoder_input_ids"]` + `T5ForConditionalGeneration` + `attn_implementation="eager"` 可跑通
 
 6. **Modal 升配风险是否完全被 `H100!` / `A100-40GB` / `B200` 锁定**
    → 即使锁定，CSV 仍需冗余记录 `actual_gpu_name`，训练时按实际卡型查表
