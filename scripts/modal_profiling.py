@@ -27,12 +27,17 @@ import modal
 
 # --- Container image ---------------------------------------------------------
 
+# Single unified image. torch>=2.7 is the minimum version that ships kernels
+# for Blackwell (sm_100 / B200). We use the same PyTorch binary on every GPU
+# (Turing → Hopper → Blackwell) so cross-GPU latency comparisons don't have
+# a software-version confound — the "B200 zero-shot" numbers land against
+# anchors profiled with the exact same kernels.
 IMAGE = (
     modal.Image.debian_slim(python_version="3.11")
     .pip_install(
-        "torch==2.5.1",                       # pin to a widely-supported PyTorch
+        "torch>=2.7",
         "torch-geometric>=2.4",
-        "transformers>=4.35,<4.52",           # see requirements.txt rationale
+        "transformers>=4.35,<4.52",               # see requirements.txt rationale
         "numpy", "pandas", "scipy", "scikit-learn", "tqdm",
     )
     # Mount source + scripts at runtime; no rebuild when code changes.

@@ -76,11 +76,14 @@ dmypy.json
 Thumbs.db
 
 # Project artifacts
-# data/ runtime output is ignored, EXCEPT data/graphs/ (pre-extracted computation graphs
-# are checked in for team review — see data/graphs/README.md for regen instructions)
+# data/ runtime output is ignored, EXCEPT:
+#   - data/graphs/ : pre-extracted computation graph pkls
+#   - data/raw/    : Modal / PSC profiling CSVs (small text, shared for team review)
 data/*
 !data/graphs/
 !data/graphs/**
+!data/raw/
+!data/raw/**
 datasets/
 *.csv
 *.parquet
@@ -95,6 +98,11 @@ outputs/
 *.ckpt
 *.onnx
 *.safetensors
+
+# Re-include data/ subdirs after the broad per-extension excludes above.
+# (git evaluates rules top-to-bottom; later rules override earlier ones.)
+!data/raw/*.csv
+!data/graphs/*.pkl
 
 # Misc
 *.log
