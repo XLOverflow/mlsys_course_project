@@ -13,6 +13,14 @@ def test_config_vector_normalized():
     assert all(0.0 <= v <= 1.0 for v in vec)
 
 
+def test_config_vector_normalized_at_grid_upper_bound():
+    """Largest value in profiling config grid still lands inside [0, 1]."""
+    c = InferenceConfig(batch_size=16, seq_len=512)
+    vec = c.to_vector()
+    assert all(0.0 <= v <= 1.0 for v in vec)
+    assert vec == [1.0, 1.0]
+
+
 def test_config_vector_scales_with_batch():
     small = InferenceConfig(batch_size=1, seq_len=128).to_vector()
     large = InferenceConfig(batch_size=8, seq_len=128).to_vector()
@@ -27,7 +35,7 @@ def test_config_grid_cartesian_product():
 
 def test_config_grid_default():
     grid = config_grid()
-    assert len(grid) == 3 * 3  # (1,4,8) x (64,128,256)
+    assert len(grid) == 5 * 4  # (1,2,4,8,16) x (64,128,256,512)
 
 
 def test_config_pairs_count():
