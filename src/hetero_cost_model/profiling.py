@@ -1,9 +1,9 @@
 """Wall-clock profiling primitives.
 
 Focused on a clean, GPU-aware timing harness (warmup + repeated measurement
-with CUDA synchronization). Actually mapping a :class:`Strategy` onto a
-compiled fx GraphModule with per-op device placement is the job of the
-Week-1 Day-3 profiling script that runs on the shared GPUs.
+with CUDA synchronization). The higher-level profiling scripts are
+responsible for iterating over ``(model_name, gpu, batch_size, seq_len)``
+configurations and writing the aggregated latency statistics to CSV.
 """
 from __future__ import annotations
 
