@@ -1,8 +1,8 @@
-"""Day 1 smoke test: extract computation graphs for all 6 target models.
+"""Day 1 smoke test: extract computation graphs for all target models.
 
 Hard blocker before any GPU profiling. If any model fails to trace here,
-we need to decide (a) drop that model, (b) switch to ONNX export, or
-(c) refactor extract_graph. Running on CPU only — no GPU needed.
+decide (a) drop that model, (b) switch to ONNX export, or (c) refactor
+``extract_graph``. Running on CPU only — no GPU needed.
 
 Usage:
     python scripts/smoke_test_graphs.py
@@ -11,79 +11,29 @@ from __future__ import annotations
 
 import sys
 import traceback
-from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
-
-import torch
+from typing import List, Tuple
 
 from hetero_cost_model.graph import extract_graph
+from hetero_cost_model.model_zoo import (
+    MODELS,
+    ModelSpec,
+    example_inputs,
+    hf_input_names,
+    load_model,
+)
 
 
 BATCH_SIZE = 1
 SEQ_LEN = 32   # small to keep trace fast; shapes don't affect trace correctness
 
 
-@dataclass
-class ModelSpec:
-    name: str             # CSV-friendly short name
-    hf_id: str            # HF hub identifier
-    family: str           # "decoder" | "encoder" | "enc-dec"
-
-
-MODELS: List[ModelSpec] = [
-    ModelSpec("gpt2-small",  "gpt2",               "decoder"),
-    ModelSpec("gpt2-medium", "gpt2-medium",        "decoder"),
-    ModelSpec("gpt2-large",  "gpt2-large",         "decoder"),
-    ModelSpec("bert-base",   "bert-base-uncased",  "encoder"),
-    ModelSpec("bert-large",  "bert-large-uncased", "encoder"),
-    ModelSpec("t5-small",    "t5-small",           "enc-dec"),
-]
-
-
-def _load_model(spec: ModelSpec) -> torch.nn.Module:
-    """Load each model with the minimum class that preserves the full graph.
-
-    ``attn_implementation="eager"`` is mandatory: (a) project decision (see
-    two_week_execution_plan.md §1, Flash-Attention-2 is unsupported on V100),
-    (b) the new ``sdpa`` path in transformers ≥ 4.55 uses ``torch.vmap`` which
-    HF's fx tracer cannot proxy.
-    """
-    from transformers import (
-        AutoModelForCausalLM,
-        AutoModelForMaskedLM,
-        T5ForConditionalGeneration,
-    )
-    kw = {"attn_implementation": "eager"}
-    if spec.family == "decoder":
-        return AutoModelForCausalLM.from_pretrained(spec.hf_id, **kw)
-    if spec.family == "encoder":
-        return AutoModelForMaskedLM.from_pretrained(spec.hf_id, **kw)
-    if spec.family == "enc-dec":
-        return T5ForConditionalGeneration.from_pretrained(spec.hf_id, **kw)
-    raise ValueError(f"unknown family: {spec.family}")
-
-
-def _example_inputs(spec: ModelSpec) -> Tuple[torch.Tensor, ...]:
-    input_ids = torch.randint(0, 1000, (BATCH_SIZE, SEQ_LEN), dtype=torch.long)
-    if spec.family == "enc-dec":
-        decoder_input_ids = torch.randint(0, 1000, (BATCH_SIZE, SEQ_LEN), dtype=torch.long)
-        return (input_ids, decoder_input_ids)
-    return (input_ids,)
-
-
-def _input_names(spec: ModelSpec) -> List[str]:
-    if spec.family == "enc-dec":
-        return ["input_ids", "decoder_input_ids"]
-    return ["input_ids"]
-
-
 def _try_extract(spec: ModelSpec) -> Tuple[bool, str]:
     try:
-        model = _load_model(spec)
+        model = load_model(spec)
         model.eval()
-        inputs = _example_inputs(spec)
+        inputs = example_inputs(spec, BATCH_SIZE, SEQ_LEN)
         graph = extract_graph(
-            model, inputs, name=spec.name, hf_input_names=_input_names(spec),
+            model, inputs, name=spec.name, hf_input_names=hf_input_names(spec),
         )
         msg = (
             f"nodes={graph.num_nodes():4d}  "
