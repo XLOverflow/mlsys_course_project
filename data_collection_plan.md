@@ -3,6 +3,8 @@
 > 与 [two_week_execution_plan.md](two_week_execution_plan.md) 和 [research_review.md](research_review.md) 协同。评审中发现的数据采集风险在下文 §3、§4、§5 内嵌修复。
 >
 > **Scope 对齐（2026-04-17）**：GPU-only cross-generation、测 forward-pass latency、Transformer 家族、HF eager mode。不收集 CPU placement / ResNet / torch.compile 数据。详见 [two_week_execution_plan.md §1](two_week_execution_plan.md)。
+>
+> **实现状态（2026-04-17）**：profiling 框架 ✅ 已实现（[scripts/run_profiling.py](scripts/run_profiling.py)）；CSV schema 20 列 ✅ 全部填写；OOM/preemption/SKU-upgrade 护栏 ✅ 全部就位；本地 CPU dry-run 已验证通过。等 Day 3 上 GPU 采真数据。
 
 ## 1. 我们到底在收集什么
 
@@ -391,6 +393,8 @@ for each row in all_profiling.csv:
    → 即使锁定，CSV 仍需冗余记录 `actual_gpu_name`，训练时按实际卡型查表
 
 确认这些后，profiling 脚本可以一天内写完并在本地 CPU 上调试通过。
+
+**实际完成情况（2026-04-17）**：以上 6 条决策点均已敲定，[scripts/run_profiling.py](scripts/run_profiling.py) 实现完毕并通过 CPU dry-run（bert-base × bs=1 × seq=32 在 28.2 ms p50，CSV 20 列全部正确写入，idempotent resume 正常）。Day 3 直接上 GPU 即可。
 
 ---
 

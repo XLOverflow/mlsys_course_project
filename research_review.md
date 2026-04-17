@@ -227,17 +227,18 @@ HF eager 延迟被 Python / dispatch overhead 主导（GPT-2 small 一次 forwar
 
 解决过程中踩的版本坑，已写入 §3.1 守护措施，后续不要升级 transformers ≥ 4.52。
 
-### (B) 重新设计"硬件泛化"的评估协议
+### (B) 重新设计"硬件泛化"的评估协议 —— ✅ 框架已落地 2026-04-17
 
-- **主 claim**：leave-one-GPU-out CV（V100/A100/H100 内部）—— 有 3 折才是真研究结论
-- **H200 改成 few-shot**（zero-shot 在只有 3 个 anchor 时不是研究 claim）
-- **B200 作为 hero zero-shot**，但必须在同一张表里报告：
-  - Constant-h 基线（h 固定成均值）
-  - HW-MLP only 基线（去掉图）
-  - Per-graph mean + learned GPU offset 基线
-- **主 baseline 换 XGBoost**（全局手工特征），Roofline 留作次要参考
+- ✅ **主 claim**：leave-one-GPU-out CV（V100/A100/H100 内部）—— `scripts/train_and_eval.py --split leave-gpu=<key>` 已实现 3 折
+- ✅ **H200 改成 few-shot**（plan §5.2 已更新，代码里 `--split zero-shot=h200` 也可跑）
+- ✅ **B200 作为 hero zero-shot**，四路 baseline 同表对比：
+  - ✅ [Per-graph mean](src/hetero_cost_model/baselines.py) + learned GPU offset 基线（实现为 `PerGraphMeanBaseline`）
+  - ⏳ Constant-h 基线（h 固定成均值）—— 属于消融实验，Day 10-11 推
+  - ⏳ HW-MLP only 基线（去掉图）—— 属于消融实验，Day 10-11 推
+- ✅ **主 baseline 换 XGBoost**：[XGBoostBaseline](src/hetero_cost_model/baselines.py) 实现完毕，12 维手工特征，CPU 训练
+- ✅ **Roofline 次要参考**：`memory_bytes` 已按 FP16 修正
 
-做了这两件，报告里的结果就从"数字看起来好，但原因存疑"变成"方法自洽、数字可解释"——对课程 project 的评分贡献最大。
+做了这两件，报告里的结果就从"数字看起来好，但原因存疑"变成"方法自洽、数字可解释"——对课程 project 的评分贡献最大。**现在这两件已全部代码就绪，等 Day 3 真数据就能直接出表格**。
 
 ---
 
