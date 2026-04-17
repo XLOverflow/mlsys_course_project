@@ -89,7 +89,7 @@ def _run_profiling(
         return f.read()
 
 
-@app.function(gpu="T4", timeout=3600)
+@app.function(gpu="T4", timeout=7200)   # 2 h — T4 is ~30× slower than H100
 def profile_t4(
     models: list[str], batch_sizes: list[int], seq_lens: list[int],
     warmup: int, runs: int,
