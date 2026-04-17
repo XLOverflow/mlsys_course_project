@@ -59,17 +59,25 @@
 ### 2.3 推理配置网格
 
 ```
-batch_sizes = [1, 2, 4, 8, 16]    # gpt2-large / bert-large 用 [1, 2, 4]；gpt2-small / bert-base 扩到 16
-seq_lens    = [64, 128, 256, 512] # bert/t5 全部支持；gpt2-large 在 V100 32GB 上 seq=512 × bs=8 可能 OOM（允许 OOM 行）
-精度        = FP16 + attn_implementation="eager"（全部统一，不测 FP32/BF16）
+batch_sizes = [1, 2, 3, 4, 6, 8, 12, 16]           # 8 档；非幂次（3/6/12）用于测 batch 插值
+seq_lens    = [32, 64, 128, 256, 512, 1024]         # 6 档；seq=32 覆盖短 prompt，seq=1024 覆盖长 context
+精度        = FP16 + attn_implementation="eager"   （全部统一，不测 FP32/BF16）
 随机 hold-out = 每个 GPU 额外 100 个随机 (bs, sl) 组合，用于工作负载泛化评估
 ```
 
+**OOM 预期**：
+
+- T4 (16 GB) / L4 (24 GB) 在 gpt2-large × bs≥8 × seq=1024 几乎必 OOM
+- V100 (32 GB) 在 gpt2-large × bs=16 × seq=1024 可能 OOM
+- A100-40GB / H100-80GB / H200 (141GB) / B200 (180GB) 覆盖全 grid
+- 所有 OOM 点记录 NaN 行，训练时过滤
+
 **总样本量**：
 
-- Hero 矩阵：6 模型 × 5 GPU × (5 batch × 4 seq) = **600 条**（扣除 OOM 约 550 条实际）
-- Hold-out 随机点：5 GPU × 100 = **500 条**
-- 合计 **~1000+ hero + 500 hold-out ≈ 1500+ 条**
+- Hero 矩阵：6 模型 × **8 GPU** × (8 batch × 6 seq) = **2304 条**（扣除 OOM 约 1800-2000 条实际）
+- Hold-out 随机点：8 GPU × 100 = **800 条**
+- 合计 **~2000 hero + 800 hold-out ≈ 2800 条**
+- 对 78K 参数 GNN 的 ratio ≈ 0.036×（比原 0.01× 健康 3.6 倍）
 
 每条样本对应 **100 次实测**（warmup=50 之后）取 p50 / p95 / mean / std 统计，不是 100 条数据行。
 
