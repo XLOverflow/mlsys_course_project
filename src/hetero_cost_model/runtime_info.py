@@ -63,11 +63,18 @@ def current_gpu_info() -> RuntimeGPUInfo:
 
 # --- name → registry key -----------------------------------------------------
 
+# Patterns are checked top-to-bottom, so more-specific substrings come first.
+# A10G is Modal/AWS's variant of A10 (different SM count + slightly different
+# clocks); we map it to the "a10" registry entry whose spec we've updated to
+# reflect A10G since that's what Modal actually schedules.
 _REGISTRY_PATTERNS = [
     (re.compile(r"\bB200\b",   re.IGNORECASE), "b200"),
     (re.compile(r"\bH200\b",   re.IGNORECASE), "h200"),
     (re.compile(r"\bH100\b",   re.IGNORECASE), "h100"),
     (re.compile(r"\bA100\b",   re.IGNORECASE), "a100"),
+    (re.compile(r"\bA10G?\b",  re.IGNORECASE), "a10"),   # matches A10 and A10G
+    (re.compile(r"\bL4\b",     re.IGNORECASE), "l4"),
+    (re.compile(r"\bT4\b",     re.IGNORECASE), "t4"),
     (re.compile(r"\bV100\b",   re.IGNORECASE), "v100"),
 ]
 
