@@ -62,18 +62,22 @@ class Hardware:
 
 
 HARDWARE_REGISTRY: Dict[str, Hardware] = {
-    # L2 cache values from NVIDIA spec sheets:
-    #   V100 (Volta):     6 MB    A100 (Ampere):  40 MB   H100 (Hopper):    50 MB
-    #   H200 (Hopper):   50 MB    B200 (Blackwell): 96 MB (announcement; subject to final docs)
-    # --- Training GPUs (PSC) ---
-    "v100": Hardware("V100", fp16_tflops=125,  memory_gb=32,  bandwidth_gbs=900,  l2_cache_mb=6,  sm_count=80),   # Volta
-    "h100": Hardware("H100", fp16_tflops=1979, memory_gb=80,  bandwidth_gbs=3350, l2_cache_mb=50, sm_count=132),  # Hopper
-    # --- Training GPU (Modal) ---
-    "a100": Hardware("A100", fp16_tflops=312,  memory_gb=40,  bandwidth_gbs=1555, l2_cache_mb=40, sm_count=108),  # Ampere
-    # --- Few-shot test GPU (Modal) ---
-    "h200": Hardware("H200", fp16_tflops=1979, memory_gb=141, bandwidth_gbs=4800, l2_cache_mb=50, sm_count=132),  # Hopper
-    # --- Zero-shot test GPU (Modal) ---
-    "b200": Hardware("B200", fp16_tflops=4500, memory_gb=180, bandwidth_gbs=8000, l2_cache_mb=96, sm_count=160),  # Blackwell
+    # All values from NVIDIA spec sheets, FP16 tensor-core TFLOPS without
+    # 2:4 structured sparsity (dense), HBM/GDDR capacity, peak memory
+    # bandwidth, L2 cache size, streaming-multiprocessor count.
+    # Adding a new device is a one-line registry entry + one-line add to
+    # scripts/modal_profiling.py (if on Modal).
+    # --- Training anchors (6 points spanning 5 architecture generations) ---
+    "v100": Hardware("V100", fp16_tflops=125,  memory_gb=32,  bandwidth_gbs=900,  l2_cache_mb=6,  sm_count=80),   # Volta     (sm_70)
+    "t4":   Hardware("T4",   fp16_tflops=65,   memory_gb=16,  bandwidth_gbs=320,  l2_cache_mb=4,  sm_count=40),   # Turing    (sm_75)
+    "a100": Hardware("A100", fp16_tflops=312,  memory_gb=40,  bandwidth_gbs=1555, l2_cache_mb=40, sm_count=108),  # Ampere    (sm_80, GA100)
+    "a10":  Hardware("A10",  fp16_tflops=125,  memory_gb=24,  bandwidth_gbs=600,  l2_cache_mb=6,  sm_count=72),   # Ampere    (sm_86, GA102) — second Ampere anchor
+    "l4":   Hardware("L4",   fp16_tflops=121,  memory_gb=24,  bandwidth_gbs=300,  l2_cache_mb=48, sm_count=58),   # Ada       (sm_89)
+    "h100": Hardware("H100", fp16_tflops=1979, memory_gb=80,  bandwidth_gbs=3350, l2_cache_mb=50, sm_count=132),  # Hopper    (sm_90)
+    # --- Few-shot test target ---
+    "h200": Hardware("H200", fp16_tflops=1979, memory_gb=141, bandwidth_gbs=4800, l2_cache_mb=50, sm_count=132),  # Hopper+   (sm_90)
+    # --- Hero zero-shot target ---
+    "b200": Hardware("B200", fp16_tflops=4500, memory_gb=180, bandwidth_gbs=8000, l2_cache_mb=96, sm_count=160),  # Blackwell (sm_100)
 }
 
 
