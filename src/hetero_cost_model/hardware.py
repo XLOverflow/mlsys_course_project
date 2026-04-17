@@ -71,7 +71,10 @@ HARDWARE_REGISTRY: Dict[str, Hardware] = {
     "v100": Hardware("V100", fp16_tflops=125,  memory_gb=32,  bandwidth_gbs=900,  l2_cache_mb=6,  sm_count=80),   # Volta     (sm_70)
     "t4":   Hardware("T4",   fp16_tflops=65,   memory_gb=16,  bandwidth_gbs=320,  l2_cache_mb=4,  sm_count=40),   # Turing    (sm_75)
     "a100": Hardware("A100", fp16_tflops=312,  memory_gb=40,  bandwidth_gbs=1555, l2_cache_mb=40, sm_count=108),  # Ampere    (sm_80, GA100)
-    "a10":  Hardware("A10",  fp16_tflops=125,  memory_gb=24,  bandwidth_gbs=600,  l2_cache_mb=6,  sm_count=72),   # Ampere    (sm_86, GA102) — second Ampere anchor
+    # A10 is shorthand — Modal schedules us onto A10G (AWS G5 variant) which
+    # has 80 SMs / ~70 TFLOPS dense FP16 tensor (vs datacenter A10's 72 / 125).
+    # Values below reflect A10G since that's what we actually measure.
+    "a10":  Hardware("A10",  fp16_tflops=70,   memory_gb=24,  bandwidth_gbs=600,  l2_cache_mb=6,  sm_count=80),   # Ampere    (sm_86, GA102, A10G)
     "l4":   Hardware("L4",   fp16_tflops=121,  memory_gb=24,  bandwidth_gbs=300,  l2_cache_mb=48, sm_count=58),   # Ada       (sm_89)
     "h100": Hardware("H100", fp16_tflops=1979, memory_gb=80,  bandwidth_gbs=3350, l2_cache_mb=50, sm_count=132),  # Hopper    (sm_90)
     # --- Few-shot test target ---
