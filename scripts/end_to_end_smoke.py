@@ -30,7 +30,11 @@ from typing import Dict, List
 import torch
 from torch_geometric.loader import DataLoader
 
-from hetero_cost_model.baselines import XGBoostBaseline, roofline_latency
+from hetero_cost_model.baselines import (
+    PerGraphMeanBaseline,
+    XGBoostBaseline,
+    roofline_latency,
+)
 from hetero_cost_model.data import LatencyDataset, Sample, load_samples_from_csv
 from hetero_cost_model.graph import GraphRepr
 from hetero_cost_model.hardware import HARDWARE_REGISTRY
@@ -159,18 +163,24 @@ def main() -> int:
     assert all(math.isfinite(h) for h in history), f"NaN in loss history: {history}"
     print(f"    epoch losses: {[f'{h:.3f}' for h in history]}")
 
-    _phase(8, TOTAL_PHASES, "Baselines: XGBoost + Roofline fit/predict...")
+    _phase(8, TOTAL_PHASES, "Baselines: Roofline + Per-graph mean + XGBoost ...")
+    targets = [s.latency_ms for s in samples]
+    pgm = PerGraphMeanBaseline().fit(samples)
+    pgm_pred = pgm.predict(samples).tolist()
     xgb = XGBoostBaseline(n_estimators=50, max_depth=4).fit(samples)
     xgb_pred = xgb.predict(samples).tolist()
-    xgb_targets = [s.latency_ms for s in samples]
     roof_pred = [roofline_latency(s.graph, s.config, s.hardware) for s in samples]
     print(
-        f"    XGBoost   — MAPE={mape(xgb_pred,  xgb_targets) * 100:6.2f}%  "
-        f"Spearman={spearman(xgb_pred,  xgb_targets):.3f}   (in-sample fit)"
+        f"    Roofline        — MAPE={mape(roof_pred, targets) * 100:6.2f}%  "
+        f"Spearman={spearman(roof_pred, targets):.3f}   (no training)"
     )
     print(
-        f"    Roofline  — MAPE={mape(roof_pred, xgb_targets) * 100:6.2f}%  "
-        f"Spearman={spearman(roof_pred, xgb_targets):.3f}   (no training)"
+        f"    Per-graph mean  — MAPE={mape(pgm_pred,  targets) * 100:6.2f}%  "
+        f"Spearman={spearman(pgm_pred,  targets):.3f}   (categorical 2-way mean)"
+    )
+    print(
+        f"    XGBoost         — MAPE={mape(xgb_pred,  targets) * 100:6.2f}%  "
+        f"Spearman={spearman(xgb_pred,  targets):.3f}   (in-sample fit)"
     )
 
     print("\n" + "=" * 68)

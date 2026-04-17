@@ -31,7 +31,11 @@ from typing import Callable, Dict, List, Sequence, Tuple
 import numpy as np
 import torch
 
-from hetero_cost_model.baselines import XGBoostBaseline, roofline_latency
+from hetero_cost_model.baselines import (
+    PerGraphMeanBaseline,
+    XGBoostBaseline,
+    roofline_latency,
+)
 from hetero_cost_model.data import LatencyDataset, Sample, load_samples_from_csv
 from hetero_cost_model.metrics import mape, spearman, top_k_accuracy
 from hetero_cost_model.models.gnn import CostModel
@@ -123,6 +127,15 @@ def run_gnn(
     return Report(f"GNN ({backbone})", pred, true)
 
 
+def run_per_graph_mean(
+    train_samples: Sequence[Sample], test_samples: Sequence[Sample],
+) -> Report:
+    bl = PerGraphMeanBaseline().fit(list(train_samples))
+    pred = bl.predict(list(test_samples)).tolist()
+    true = [s.latency_ms for s in test_samples]
+    return Report("Per-graph mean", pred, true)
+
+
 def run_xgboost(
     train_samples: Sequence[Sample], test_samples: Sequence[Sample],
 ) -> Report:
@@ -170,6 +183,7 @@ def main() -> int:
     reports: List[Report] = []
     print("\nTraining/evaluating ...")
     reports.append(run_roofline(te))
+    reports.append(run_per_graph_mean(tr, te))
     reports.append(run_xgboost(tr, te))
     reports.append(run_gnn(tr, te, args.backbone, cfg))
 
@@ -180,6 +194,8 @@ def main() -> int:
         mape_str = f"{r.mape * 100:.2f}%" if not math.isnan(r.mape) else "nan"
         print(f"{r.name:<18}  {mape_str:>8}  {r.spearman:>10.3f}  {r.top1:>8.3f}")
     print("-" * 72)
+    print("\nGNN must beat 'Per-graph mean' (diagnostic) and 'XGBoost' (strong).")
+    print("If GNN ≈ Per-graph mean on leave-one-GPU-out, graph features are decorative.")
 
     return 0
 

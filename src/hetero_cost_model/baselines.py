@@ -1,10 +1,16 @@
 """Non-GNN baselines for cost-model comparison.
 
-Two reference methods, from "weakest reasonable" to "strong":
+Three reference methods, each playing a distinct role:
 
 1. ``roofline_latency`` — pure analytical formula, no training. Proves the
    GNN learns something beyond peak compute/bandwidth bounds.
-2. ``XGBoostBaseline`` — gradient-boosted trees on hand-crafted global
+2. ``PerGraphMeanBaseline`` — data-leakage diagnostic. Categorical two-way
+   mean (per-model + per-GPU offset) with **no access to graph structure,
+   per-op features, or (batch, seq)**. If the GNN's leave-one-GPU-out MAPE
+   doesn't beat this, the GNN is effectively a (model_id, gpu_id) lookup
+   and graph structure / hardware features contribute nothing. Mandatory
+   companion for any generalization claim.
+3. ``XGBoostBaseline`` — gradient-boosted trees on hand-crafted global
    graph + config + hardware features. This is the **strong** baseline the
    GNN has to beat (target: 3–5 MAPE points gap); if it doesn't, the graph
    structure isn't adding value.
@@ -14,7 +20,7 @@ Features used by XGBoost (``NUM_GLOBAL_FEATURES`` total):
   - Graph-level: log1p(total_flops), log1p(total_memory_bytes), num_nodes,
     num_edges
   - Config:      batch_size, seq_len
-  - Hardware:    the full 6-dim ``HARDWARE_FEATURE_DIM`` vector (normalized)
+  - Hardware:    the full 5-dim ``HARDWARE_FEATURE_DIM`` vector (normalized)
 
 log1p is used for the graph-level magnitudes because they span ~3 orders of
 magnitude across the 6 target models.
@@ -22,8 +28,9 @@ magnitude across the 6 target models.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from typing import List, Optional, Sequence
+from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 
@@ -59,6 +66,60 @@ def roofline_latency(
         memory_ms   = node.memory_bytes / peak_bw * 1000.0 if peak_bw else 0.0
         total_ms += max(compute_ms, memory_ms)
     return total_ms
+
+
+# --- Diagnostic: Per-graph mean + per-GPU offset -----------------------------
+
+@dataclass
+class PerGraphMeanBaseline:
+    """Categorical two-way mean: per-model intercept + per-GPU residual offset.
+
+    No graph structure, no per-op features, no (batch, seq). Purely a lookup
+    on (``model_name``, ``hardware.name``). The point is to force the GNN to
+    prove it learned something beyond that lookup.
+
+    Prediction rule::
+
+        ŷ(m, g) = graph_mean[m] + gpu_offset[g]
+
+    For held-out GPUs (leave-one-GPU-out, B200 zero-shot), ``gpu_offset``
+    falls back to 0 — representing the "no information about this device"
+    case. This is the correct handicap because the whole point of the
+    hardware feature vector is to carry that information in the GNN.
+    """
+
+    graph_mean: Dict[str, float] = field(default_factory=dict)
+    gpu_offset: Dict[str, float] = field(default_factory=dict)
+    overall_mean: float = 0.0
+
+    def fit(self, samples: Sequence[Sample]) -> "PerGraphMeanBaseline":
+        if not samples:
+            raise ValueError("cannot fit on empty sample list")
+
+        self.overall_mean = float(np.mean([s.latency_ms for s in samples]))
+
+        # Stage 1: per-model mean latency
+        by_model: Dict[str, List[float]] = defaultdict(list)
+        for s in samples:
+            by_model[s.model_name].append(s.latency_ms)
+        self.graph_mean = {m: float(np.mean(v)) for m, v in by_model.items()}
+
+        # Stage 2: per-GPU residual offset
+        by_gpu: Dict[str, List[float]] = defaultdict(list)
+        for s in samples:
+            residual = s.latency_ms - self.graph_mean[s.model_name]
+            by_gpu[s.hardware.name].append(residual)
+        self.gpu_offset = {g: float(np.mean(v)) for g, v in by_gpu.items()}
+
+        return self
+
+    def predict(self, samples: Sequence[Sample]) -> np.ndarray:
+        out: List[float] = []
+        for s in samples:
+            base = self.graph_mean.get(s.model_name, self.overall_mean)
+            offset = self.gpu_offset.get(s.hardware.name, 0.0)
+            out.append(base + offset)
+        return np.array(out, dtype=np.float32)
 
 
 # --- Learned: XGBoost on global features -------------------------------------
@@ -134,6 +195,7 @@ class XGBoostBaseline:
 
 __all__ = [
     "roofline_latency",
+    "PerGraphMeanBaseline",
     "XGBoostBaseline",
     "sample_to_global_features",
     "samples_to_feature_matrix",
