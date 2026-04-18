@@ -1,47 +1,47 @@
 {
-  "split": "zero-shot=b200",
+  "split": "leave-gpu=h100",
   "epochs": 50,
   "backbone": "gat",
   "constant_h": false,
-  "few_shot_samples": 100,
+  "few_shot_samples": 0,
   "filter_noisy": false,
   "metrics": [
     {
       "method": "Roofline",
-      "mape": 98.78,
-      "spearman": 0.516,
+      "mape": 97.01,
+      "spearman": 0.573,
       "top1": 0.0
     },
     {
       "method": "Per-graph mean",
-      "mape": 363.74,
-      "spearman": 0.77,
+      "mape": 439.79,
+      "spearman": 0.74,
       "top1": 0.0
     },
     {
       "method": "Pooled MLP",
-      "mape": 45.47,
-      "spearman": 0.367,
+      "mape": 50.47,
+      "spearman": 0.703,
       "top1": 0.0
     },
     {
       "method": "XGBoost",
-      "mape": 8.7,
-      "spearman": 0.949,
-      "top1": 0.0
+      "mape": 14.04,
+      "spearman": 0.965,
+      "top1": 1.0
     },
     {
       "method": "Per-kernel MLP",
-      "mape": 208.77,
-      "spearman": 0.784,
+      "mape": 546.24,
+      "spearman": -0.28,
       "top1": 0.0
     },
     {
       "method": "GNN (gat)",
-      "mape": 25.17,
-      "spearman": 0.782,
+      "mape": 59.46,
+      "spearman": 0.843,
       "top1": 0.0
     }
   ],
-  "raw_log_path": "/results/zero_shot_b200_gat_e50__fs100.json.log"
+  "raw_log_path": "/results/leave_gpu_h100_gat_e50__no_gskip.json.log"
 }

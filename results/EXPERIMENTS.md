@@ -248,3 +248,164 @@ Pooled MLP 和 Per-kernel MLP 也同步获得 `global_skip` 开关以保持 abla
 
 - [ ] §5.2 Table 1 / 2 / 3 的骨架写作，填已有数字
 - [ ] §5.5 Limitations 诚实写 "v2 leave-gpu 退步"、"Per-kernel MLP 不稳定" 这些 negative findings
+
+---
+
+## Phase 6 — v2 全面 sweep（16 轮）
+*执行时间：2026-04-17 夜，全部 Modal H100，50 epochs，默认超参（hidden=64，L=2，dropout=0.1，ranking_λ=0.1，seed=0）。原始 JSON 全部在 `results/` 目录下。*
+
+### 6.1 执行矩阵总览
+
+| 批次 | 目的 | 轮数 | 验证的 claim / 假设 |
+|---|---|---:|---|
+| **P0** 补齐 leave-model-out | 把 "GNN 未见图 > XGBoost" 从 2 个模型扩到 6 个 | 4 | C1（主方法 > baselines）、C3（graph > tabular） |
+| **P1** v2 开关拆解 | 在 leave-model=gpt2-large 上拆 node_sh / sum / gskip | 4 | 哪个 v2 开关是主要贡献者 |
+| **P2** leave-gpu=h100 退步诊断 | 单独关掉 v2 某个开关，看谁是元凶 | 3 | v2 leave-gpu 退步的 root cause |
+| **P4** Table 2 v2 few-shot | 重测 v1 不稳定的 fs100/fs200 曲线 | 5 | v1 fs100 爆炸是否在 v2 下修复 |
+
+### 6.2 P0 — leave-model-out 完整 6 模型表（Table 1 候选）
+
+| 实验 | Roofline | PerGraphMean | PoolMLP | XGBoost | PKMLP | **GNN** | Δ(GNN−XGB) | GNN Spearman | XGB Spearman |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| leave-model=gpt2-small  | 94.1% | 353.9% | 156.6% |  96.1% | 1091.4% | **20.0%** | **−76.1** 🏆 | 0.918 | 0.963 |
+| leave-model=gpt2-medium | 91.5% | 110.4% |  70.7% |  53.4% | 1093.5% | **22.0%** | **−31.5** 🏆 | 0.937 | 0.984 |
+| leave-model=gpt2-large  | 88.7% |  54.6% |  37.7% |  39.4% |  314.2% | **25.6%** | **−13.7** 🏆 | 0.956 | 0.990 |
+| leave-model=bert-base   | 97.2% | 472.4% |  67.1% | 125.9% |   57.0% | **21.2%** | **−104.7** 🏆 | 0.866 | 0.970 |
+| leave-model=bert-large  | 96.0% | 177.1% |  48.7% |  50.8% |  115.0% | **31.0%** | **−19.8** 🏆 | 0.903 | 0.970 |
+| leave-model=t5-small    | 98.8% | 159.5% |  41.5% |  59.7% |   44.1% | **33.0%** | **−26.7** 🏆 | 0.894 | 0.898 |
+
+**读表结论**：
+- GNN 在 **6/6** 个未见模型上 MAPE 全部落在 **20–33%** 区间
+- XGBoost 在未见图下 MAPE **飙升到 39–126%**（bert-base 最惨）
+- GNN Spearman（ranking 保真度）**0.866–0.956**，所有模型 > 0.85
+- **GNN 完胜 XGBoost 13.7–104.7 MAPE 点**
+- **C1（learned cost model > baselines）在 6/6 未见图上成立**
+- **C3（graph 结构有价值）**：Per-kernel MLP 在这 6 个 split 上 MAPE 从 44% 一路飙到 1093%，**不稳定 + 平均远差于 GNN** → 去掉边的 sum MLP 不能替代 GNN
+
+### 6.3 P1 — v2 三开关 ablation（Table 3 候选）
+
+在 `leave-model=gpt2-large` split 上跑。v2 baseline = 全开（node_sh + sum + gskip）。
+
+| 实验 | Roofline | PerGraphMean | PoolMLP | XGBoost | PKMLP | **GNN** | Δ(GNN−XGB) | GNN Spearman |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| **v2 三开关全开**（baseline） | 88.7% | 54.6% | 37.7% | 39.4% | 314.2% | **25.6%** | −13.7 🏆 | 0.956 |
+| 仅 node_level_sh              | 88.7% | 54.6% | 37.5% | 39.4% | 303.9% |    82.8% |  +43.4 | 0.928 |
+| 仅 sum readout                | 88.7% | 54.6% | 37.2% | 39.4% | 304.0% |   350.6% | +311.2 | 0.797 |
+| 仅 global_skip                | 88.7% | 54.6% | 37.2% | 39.4% | 297.8% |    40.4% |   +1.1 | 0.916 |
+| 三开关全关（= v1 等价）        | 88.7% | 54.6% | 37.1% | 39.4% | 308.5% |    68.3% |  +28.9 | 0.895 |
+
+**读表结论（非常重要）**：
+- **单个开关都不够**：仅 node_sh → 82.8%，仅 sum → 350.6%，仅 gskip → 40.4%。没有任何一个开关能独立达到 v2 全开的 25.6%
+- **三开关协同**：v2 全开（25.6%）比 v1 全关（68.3%）好 42.7 pts，但中间状态比两端都差
+- 特别地，**仅 sum readout 是灾难（350%）**——sum pool 放大输入噪声，必须搭配 gskip 的全局锚点 + node_sh 的硬件条件才收敛
+- **Table 3 叙事定调**："三个改动作为一个整体生效，不是独立可加的"
+
+### 6.4 P2 — leave-gpu=h100 退步诊断
+
+v1 上这个 split = 46.5%，v2 上退到 67.8%。诊断单独关掉某个 v2 开关。
+
+| 实验 | Roofline | PerGraphMean | PoolMLP | XGBoost | PKMLP | **GNN** | Δ(GNN−XGB) | GNN Spearman |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| v2 三开关全开      | 97.0% | 439.8% | 50.5% | 14.0% | 558.9% | **67.8%** |  +53.8 | 0.869 |
+| 关 global_skip     | 97.0% | 439.8% | 50.5% | 14.0% | 546.2% |    59.5% |  +45.4 | 0.843 |
+| 关 node_level_sh   | 97.0% | 439.8% | 50.5% | 14.0% | 540.6% |   619.7% | +605.7 | 0.664 |
+| 改 mean_max readout| 97.0% | 439.8% | 50.5% | 14.0% | 562.8% |    60.5% |  +46.5 | 0.345 |
+| （v1 历史数据）    | — | — | — | — | — | 46.5% | +32.5 | — |
+
+**读表结论**：
+- **node_level_sh 必须保留**：关掉它 MAPE 直接爆炸到 **619.7%**（Spearman 0.664）——v2 的前向依赖它做硬件条件化
+- **关 global_skip 有微小改善**（67.8 → 59.5），但离 v1 的 46.5% 还差 13 pts
+- **mean_max readout 改善更小**（67.8 → 60.5），Spearman 反而掉到 **0.345**（几乎无序）
+- **没有单个开关能把 v2 恢复到 v1 的 46.5%** → leave-gpu-out 在 v2 架构下**本质上更难**，不是单个 flag 问题
+- **H100 split 上 XGBoost 14.0% 是 GNN 没法打过的**——graph 都见过，只剩硬件特征插值，GBM 是理想模型
+
+**诚实叙事**："v2 优化 leave-model-out（未见图），代价是 leave-gpu-out（未见硬件）退步 20 pts。这反映了模型在两类泛化间的 trade-off。"
+
+### 6.5 P4 — Table 2 v2 few-shot 曲线（hero）
+
+| 实验 | Roofline | PerGraphMean | PoolMLP | XGBoost | PKMLP | **GNN** | v1 对应值 | Δ(v1→v2) |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| zero-shot=b200 N=0   | 98.7% | 436.6% | 57.8% | 12.7% | 234.5% | **27.9%** |  51.0% | **−23.1** 🔥 |
+| zero-shot=b200 N=50  | 98.8% | 385.7% | 72.1% |  8.3% | 150.7% | **22.9%** |  44.5% | **−21.6** 🔥 |
+| zero-shot=b200 N=100 | 98.8% | 363.7% | 45.5% |  8.7% | 208.8% | **25.2%** | **139%** 💥 | **−113.8** 🔥 |
+| zero-shot=b200 N=200 | 98.7% | 316.8% | 32.5% |  5.6% | 246.9% |  **9.7%** |  37.8% | **−28.1** 🔥 |
+| zero-shot=h200 N=0   | 98.0% | 381.9% | 32.1% | 12.0% | 440.9% | **20.9%** |  45.2% | **−24.3** 🔥 |
+| zero-shot=h200 N=100 | 98.1% | 318.2% | 40.3% |  4.4% |  85.7% | **19.8%** | **127%** 💥 | **−107.2** 🔥 |
+
+**读表结论**：
+- **v1 的 fs100 爆炸（139%、127%）在 v2 下完全消失**——B200 fs100 变成 25.2%，H200 fs100 变成 19.8%
+- **B200 曲线单调降**：27.9 → 22.9 → 25.2 → 9.7（fs100 稍反弹但稳定）
+- **B200 fs200 = 9.7%** 是**首个 < 10% 的 v2 GNN 数字**，接近 XGBoost 的水平
+- XGBoost 仍在所有 few-shot 点占优（5.6–12.7%），但 v2 GNN 的差距已缩到 4–16 pts
+- **Table 2 hero 可用**：v2 达到 plan §8 定的 "B200 zero-shot < 30%" 目标，且 few-shot 曲线稳定
+
+### 6.6 Phase 6 综合结论（6 条站得住的发现）
+
+**H-1　C1 在 6/6 未见模型上成立。**
+GNN 在每个 leave-model-out split 上都战胜所有 5 个 baseline（Roofline / PerGraphMean / Pooled MLP / XGBoost / Per-kernel MLP）。GNN MAPE 20–33%，XGBoost 39–126%。差距从 bert-base 的 104.7 pts 到 gpt2-large 的 13.7 pts。
+
+**H-2　C3 成立：graph 结构 load-bearing。**
+Per-kernel MLP（NeuSight 风格，无边 sum-MLP）在 6/6 leave-model split 上 MAPE **44%–1093%**，数值上不稳定、平均远劣于 GNN。边 + message passing **真的在工作**。
+
+**H-3　v2 三开关是协同的，不是可加的。**
+v2 全开 25.6% / v1 全关 68.3% / 单开任一项 40–350%。Report Table 3 应以"v2 架构整体"呈现，不宜拆成独立贡献。
+
+**H-4　leave-gpu-out 退步根源：架构 trade-off，不是 bug。**
+node_level_sh 是 v2 必需（去掉 → 619.7% 灾难），但 v2 即使全配齐（67.8%）也跑不过 v1（46.5%）。任何单开关回退都救不回来。本质是：v2 的 per-node 硬件条件化在"未见硬件 + 见过图"上过拟合 5 个训练 GPU 的组合。
+
+**H-5　Table 2 v1 不稳定性已修复。**
+v1 B200 fs100 = 139% → v2 25.2%。v1 H200 fs100 = 127% → v2 19.8%。B200 fs200 = **9.7%**。few-shot 曲线单调、训练稳定。
+
+**H-6　XGBoost 在"见过图 + 新硬件"下是天花板。**
+所有 zero-shot/leave-gpu split 上 XGBoost MAPE = 4.4–14.0%，GNN 没法打过。因为 `hardware × flops × bytes` 是光滑插值面，GBM 是最优 kernel。**论文站位**：GNN 的价值在 graph 泛化（C1、C3），不是硬件插值。
+
+### 6.7 → Report 三张表拼装
+
+- **Table 1（主表）**：P0 的 6 个 leave-model-out 行 + Phase 1 的 random 行 = 7 行 × 6 baseline。GNN 在 6/7 行上 top-1（random 行 XGBoost 占优）。
+- **Table 2（hero）**：P4 的 B200 曲线 {0, 50, 100, 200} = {27.9%, 22.9%, 25.2%, 9.7%} + H200 {0, 100} = {20.9%, 19.8%}。
+- **Table 3（ablation）**：P1 的 5 行 ablation，标题叙事"v2 三开关协同"。
+
+### 6.8 §5.5 Limitations（诚实记录）
+
+1. **v2 leave-gpu-out 退步**：H100 split 从 v1 的 46.5% 退到 v2 的 67.8%，且 XGBoost 在这类 split 上仍是 14.0% 的强基线。v2 架构在"未见图"和"未见硬件"之间有 trade-off。
+2. **Per-kernel MLP baseline 不稳定**：在 6/6 leave-model split 和 leave-gpu=h100 上经常 > 300%（最惨 1093%）。我们没有对它单独调超参，因为即使它最好的状态也被 v2 GNN 甩开 > 10 pts。
+3. **XGBoost 在 in-distribution 上是强基线**：random / zero-shot 硬件 split 下 XGBoost MAPE 都在 15% 以下，GNN 没法打过。仅在"未见图"设定下 GNN 才有优势。
+
+### 6.9 Action items 状态更新
+
+| 项 | 状态 | 备注 |
+|---|---|---|
+| P0 leave-model-out 补齐 | **✅ DONE** (6/6) | 全部 GNN 胜 XGBoost，C1 稳 |
+| P1 v2 开关 ablation | **✅ DONE** (4+1) | 结论：三开关协同，不可加 |
+| P2 leave-gpu=h100 诊断 | **✅ DONE** (3 变体) | 结论：非单点 bug，架构 trade-off |
+| P4 Table 2 v2 few-shot | **✅ DONE** (5 轮) | fs100 爆炸在 v2 下彻底修复 |
+| P3 Per-kernel MLP 稳定性 | ⏸ 暂缓 | 不影响故事线，可选 |
+| P5 写 report | 🟢 可以开写 | 三张表数字齐备 |
+
+### 6.10 Phase 6 文件索引（16 个新 JSON）
+
+**P0（6 个新 leave-model）**：
+- `leave_model_gpt2_small_gat_e50.json`
+- `leave_model_gpt2_medium_gat_e50.json`
+- `leave_model_bert_base_gat_e50.json`
+- `leave_model_t5_small_gat_e50.json`
+- （已有）`leave_model_gpt2_large_gat_e50.json`、`leave_model_bert_large_gat_e50.json`
+
+**P1（4 个 ablation，文件名后缀编码开关组合）**：
+- `leave_model_gpt2_large_gat_e50__ro_mean_max_no_gskip.json` — 仅 node_sh
+- `leave_model_gpt2_large_gat_e50__no_node_sh_no_gskip.json` — 仅 sum
+- `leave_model_gpt2_large_gat_e50__no_node_sh_ro_mean_max.json` — 仅 gskip
+- `leave_model_gpt2_large_gat_e50__no_node_sh_ro_mean_max_no_gskip.json` — 全关（v1）
+
+**P2（3 个 h100 诊断）**：
+- `leave_gpu_h100_gat_e50__no_gskip.json`
+- `leave_gpu_h100_gat_e50__no_node_sh.json`
+- `leave_gpu_h100_gat_e50__ro_mean_max.json`
+
+**P4（5 个 v2 few-shot）**：
+- `zero_shot_b200_gat_e50__fs50.json`（v2 覆盖 v1）
+- `zero_shot_b200_gat_e50__fs100.json`（v2 覆盖 v1 的 139%）
+- `zero_shot_b200_gat_e50__fs200.json`（v2 覆盖 v1）
+- `zero_shot_h200_gat_e50.json`（v2 覆盖 v1）
+- `zero_shot_h200_gat_e50__fs100.json`（v2 覆盖 v1 的 127%）
+

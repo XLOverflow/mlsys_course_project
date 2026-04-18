@@ -1,47 +1,47 @@
 {
-  "split": "zero-shot=b200",
+  "split": "leave-model=gpt2-small",
   "epochs": 50,
   "backbone": "gat",
   "constant_h": false,
-  "few_shot_samples": 100,
+  "few_shot_samples": 0,
   "filter_noisy": false,
   "metrics": [
     {
       "method": "Roofline",
-      "mape": 98.78,
-      "spearman": 0.516,
+      "mape": 94.09,
+      "spearman": 0.675,
       "top1": 0.0
     },
     {
       "method": "Per-graph mean",
-      "mape": 363.74,
-      "spearman": 0.77,
+      "mape": 353.91,
+      "spearman": 0.664,
       "top1": 0.0
     },
     {
       "method": "Pooled MLP",
-      "mape": 45.47,
-      "spearman": 0.367,
+      "mape": 156.59,
+      "spearman": 0.867,
       "top1": 0.0
     },
     {
       "method": "XGBoost",
-      "mape": 8.7,
-      "spearman": 0.949,
+      "mape": 96.1,
+      "spearman": 0.963,
       "top1": 0.0
     },
     {
       "method": "Per-kernel MLP",
-      "mape": 208.77,
-      "spearman": 0.784,
+      "mape": 1091.42,
+      "spearman": 0.53,
       "top1": 0.0
     },
     {
       "method": "GNN (gat)",
-      "mape": 25.17,
-      "spearman": 0.782,
+      "mape": 20.01,
+      "spearman": 0.918,
       "top1": 0.0
     }
   ],
-  "raw_log_path": "/results/zero_shot_b200_gat_e50__fs100.json.log"
+  "raw_log_path": "/results/leave_model_gpt2_small_gat_e50.json.log"
 }

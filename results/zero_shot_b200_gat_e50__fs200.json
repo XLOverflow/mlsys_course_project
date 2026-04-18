@@ -20,8 +20,8 @@
     },
     {
       "method": "Pooled MLP",
-      "mape": 32.83,
-      "spearman": 0.421,
+      "mape": 32.53,
+      "spearman": 0.489,
       "top1": 0.0
     },
     {
@@ -32,14 +32,14 @@
     },
     {
       "method": "Per-kernel MLP",
-      "mape": 125.79,
-      "spearman": 0.81,
+      "mape": 246.91,
+      "spearman": 0.722,
       "top1": 0.0
     },
     {
       "method": "GNN (gat)",
-      "mape": 37.81,
-      "spearman": 0.193,
+      "mape": 9.66,
+      "spearman": 0.851,
       "top1": 0.0
     }
   ],
