@@ -364,20 +364,37 @@ python scripts/train_and_eval.py --csv data/raw/all.csv --split leave-gpu=v100 -
 
 **Day 2 检查点**：三人在本地完成各自模块的单元测试，确认接口可以对接。**全部 绿灯**：pytest 22/22 + smoke test 6/6 + end-to-end 8/8 + train_and_eval dry-run 4 baseline 并列输出均正常。下游代码 pipeline 完备，等 Day 3 真数据。
 
-#### Day 3–4（周三–周四）：数据收集冲刺
+#### Day 3–4（周三–周四）：数据收集冲刺 —— ✅ Modal 部分完成 2026-04-17
 
-| 负责人 | 任务 | 交付物 | 需要GPU |
-|--------|------|--------|---------|
-| **Xiang Li** | 【V100, PSC】Profile：6 模型 × 8 batch × 6 seq = 288 configs + 100 hold-out，单卡分配 + `taskset -c` 绑核（**不要 `--exclusive`**）。Modal 冗余：可同时用 `modal run scripts/modal_profiling.py --gpu-sku t4 --models all --batch-sizes 1,2,3,4,6,8,12,16 --seq-lens 32,64,128,256,512,1024` 采 T4 | `v100.csv` + `t4.csv` | V100 (PSC) + T4 (Modal) |
-| **Xinhao Tan** | 【H100, PSC】同配置矩阵；Modal 端并行用 `--gpu-sku a100-40gb` 采 A100、`--gpu-sku l4` 采 L4、`--gpu-sku a10` 采 A10。**所有 Modal session 用 SKU lock** (`A100-40GB` / `L4` / `A10` / `H100!`) 防止升配污染 | `h100.csv` + `a100.csv` + `l4.csv` + `a10.csv` | H100 (PSC) + A100/L4/A10 (Modal) |
-| **Zhikai Hu** | 数据管线：合并 CSV、特征归一化、构造 PyG Data 对象；**按 `actual_gpu_name` 分组而不是脚本声明的 gpu label**（防 Modal 升配污染）；准备 train/val/test 切分 | `dataset.py` + `data/` | 否 |
+**实际收集结果（7 个 GPU 全部 Modal 上采集完成，PSC V100 待定）**：
 
-**关键提示**：
+| GPU | actual_gpu_name | 行数 | OOM | noisy | 覆盖 |
+|---|---|---:|---:|---:|---|
+| T4 | Tesla T4 | 271 | 0 | 22 | 6 models (gpt2-large 47/48，缺 bs=16×seq=1024) |
+| A100 | NVIDIA A100-SXM4-40GB | 272 | 0 | 4 | 完整 |
+| A10 | NVIDIA A10G (即 Modal SKU "A10") | 272 | 0 | 6 | 完整 |
+| L4 | NVIDIA L4 | 272 | 0 | 4 | 完整 |
+| H100 | NVIDIA H100 80GB HBM3 | 272 | 0 | 21 | 完整 |
+| H200 | NVIDIA H200 | 272 | 0 | 0 | 完整 |
+| B200 | NVIDIA B200 | 272 | 0 | 2 | 完整 |
+| **合计** | | **1,903** | **0** | 59 (3%) | |
 
-- Profiling 配置矩阵统一，所有 GPU 跑完全相同的 (模型, batch_size, seq_len) 组合，结果 CSV 只有 gpu 列不同，便于直接对比
-- Modal job 即提交即运行，A100 数据与 H100 数据可并行收集
-- **Modal 必须用锁定 SKU**（`H100!` / `A100-40GB` / `B200`，不要 `H100` / `A100` / `B200+`）——缺货时 Modal 会悄悄升配，`HARDWARE_REGISTRY` 里的规格就对不上了
-- 配置矩阵按 [data_collection_plan.md](data_collection_plan.md) 执行：batch (1,2,3,4,6,8,12,16) × seq (32,64,128,256,512,1024) = **48 configs / (model, GPU)**，覆盖 6 个 training anchor + 2 个 test target，合计 **~2000 hero + 800 hold-out ≈ 2800 条**
+**已超额完成数据量目标**（原计划 1500+，实际 1903）。CSV 全部在 `data/raw/` 里 committed。
+
+**整理的清洗（已落地）**：
+
+- 每个 CSV 减掉 16 行 BERT × seq=1024 的 B 类模型能力限制（非硬件 OOM，无信号）
+- 配置 grid 加 `max_seq_len` 预过滤（见 [model_zoo.py](src/hetero_cost_model/model_zoo.py) + [run_profiling.py](scripts/run_profiling.py)）
+- A10G SKU quirk（Modal 给的 A10 其实是 A10G）→ 正则 + HARDWARE_REGISTRY 已对齐实际规格
+
+**Day 3-4 踩的坑与解决**：
+
+- **T4 × gpt2-large 多次 "silently stall"**（30+ 分钟 local log 无进展）→ 实际上容器在云端一直成功写 Volume。**教训：Modal 上 local log stall ≠ container 死，`modal volume ls` 才是 source of truth**。最终通过 Volume-backed 的 resume 机制拿回 47/48 configs
+- **B200 首次失败**：torch 2.5.1 没有 sm_100 kernel → 升级到 `torch>=2.7` 统一镜像
+- **Modal 不支持 non-preemptible GPU**：改用 Volume 持久化 + auto-retry 10 次模拟
+- **Modal 会把 A100 升成 A100-80GB、A10 给 A10G**：`H100!` / `A100-40GB` 锁定 SKU + 在 CSV 里记录 `actual_gpu_name` 做二次校验
+
+**V100 (PSC) 状态**：⏳ 未启动。原计划作为训练 anchor 提供 Volta (sm_70)。**不是 blocker**——现有 7 个 GPU 已覆盖 5 种架构（Turing → Ampere → Ada → Hopper → Blackwell）；V100 可作为 Week 2 stretch 补充数据。
 
 #### Day 5–7（周五–周日）：Baseline 训练与验证 → 产出 Table 1（主结果）
 
