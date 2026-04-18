@@ -1,0 +1,47 @@
+{
+  "split": "leave-gpu=h100",
+  "epochs": 100,
+  "backbone": "gat",
+  "constant_h": false,
+  "few_shot_samples": 0,
+  "filter_noisy": false,
+  "metrics": [
+    {
+      "method": "Roofline",
+      "mape": 97.01,
+      "spearman": 0.573,
+      "top1": 0.0
+    },
+    {
+      "method": "Per-graph mean",
+      "mape": 439.79,
+      "spearman": 0.74,
+      "top1": 0.0
+    },
+    {
+      "method": "Pooled MLP",
+      "mape": 66.51,
+      "spearman": 0.605,
+      "top1": 0.0
+    },
+    {
+      "method": "XGBoost",
+      "mape": 14.04,
+      "spearman": 0.965,
+      "top1": 1.0
+    },
+    {
+      "method": "Per-kernel MLP",
+      "mape": 62.04,
+      "spearman": 0.913,
+      "top1": 0.0
+    },
+    {
+      "method": "GNN (gat)",
+      "mape": 53.65,
+      "spearman": 0.521,
+      "top1": 0.0
+    }
+  ],
+  "raw_log_path": "/results/leave_gpu_h100_gat_e100__h128_L3.json.log"
+}
