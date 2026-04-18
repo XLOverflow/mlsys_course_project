@@ -49,6 +49,16 @@ IMAGE = (
 
 app = modal.App("hetero-cost-profiling", image=IMAGE)
 
+# Persistent Volume so CSV writes survive container preemption. Modal T4
+# workloads are preemptible and can be reclaimed mid-session; without
+# persistence the run_profiling.py driver has to start from scratch every
+# time (losing all flushed rows). With the volume, the driver's idempotent
+# resume logic (skip rows already in the CSV) means each restart picks up
+# where the last one died.
+CSV_VOLUME = modal.Volume.from_name(
+    "hetero-cost-profiling-csvs", create_if_missing=True,
+)
+
 
 # --- Per-SKU Modal function entries ------------------------------------------
 #
@@ -62,8 +72,15 @@ def _run_profiling(
     seq_lens: list[int],
     warmup: int,
     runs: int,
+    out_basename: str | None = None,
 ) -> bytes:
-    """Install the local package, run the profiling driver, return CSV bytes."""
+    """Install the local package, run the profiling driver, return CSV bytes.
+
+    CSV is written into ``/csvs`` (Modal Volume) so progress survives
+    preemption. The driver uses its own idempotent resume (``_existing_rows``)
+    to skip configs already present in the CSV, turning a preempt → retry
+    cycle into incremental checkpointing.
+    """
     import os
     import subprocess
     import sys
@@ -73,7 +90,9 @@ def _run_profiling(
         [sys.executable, "-m", "pip", "install", "-e", "/root", "--quiet"]
     )
 
-    output_path = f"/tmp/{gpu_label}.csv"
+    filename = out_basename or f"{gpu_label}.csv"
+    output_path = f"/csvs/{filename}"
+    os.makedirs("/csvs", exist_ok=True)
     cmd = [
         sys.executable, "scripts/run_profiling.py",
         "--gpu", gpu_label,
@@ -85,65 +104,74 @@ def _run_profiling(
         "--output", output_path,
     ]
     subprocess.check_call(cmd)
+    # Ensure the final write is committed to the Volume before returning.
+    CSV_VOLUME.commit()
     with open(output_path, "rb") as f:
         return f.read()
 
 
-@app.function(gpu="T4", timeout=7200)   # 2 h — T4 is ~30× slower than H100
+_VOLUME_MOUNT = {"/csvs": CSV_VOLUME}
+# modal.Retries: whenever Modal preempts the container, retry up to 10 times.
+# Combined with the CSV-on-Volume resume logic in run_profiling.py, this
+# turns preempt → retry into incremental checkpointing.
+_PREEMPT_RETRIES = modal.Retries(max_retries=10, backoff_coefficient=1.0, initial_delay=0.0)
+
+
+@app.function(gpu="T4", timeout=7200, volumes=_VOLUME_MOUNT, retries=_PREEMPT_RETRIES)
 def profile_t4(
     models: list[str], batch_sizes: list[int], seq_lens: list[int],
-    warmup: int, runs: int,
+    warmup: int, runs: int, out_basename: str | None = None,
 ) -> bytes:
-    return _run_profiling("t4", models, batch_sizes, seq_lens, warmup, runs)
+    return _run_profiling("t4", models, batch_sizes, seq_lens, warmup, runs, out_basename)
 
 
-@app.function(gpu="L4", timeout=3600)
+@app.function(gpu="L4", timeout=3600, volumes=_VOLUME_MOUNT, retries=_PREEMPT_RETRIES)
 def profile_l4(
     models: list[str], batch_sizes: list[int], seq_lens: list[int],
-    warmup: int, runs: int,
+    warmup: int, runs: int, out_basename: str | None = None,
 ) -> bytes:
-    return _run_profiling("l4", models, batch_sizes, seq_lens, warmup, runs)
+    return _run_profiling("l4", models, batch_sizes, seq_lens, warmup, runs, out_basename)
 
 
-@app.function(gpu="A10", timeout=3600)
+@app.function(gpu="A10", timeout=3600, volumes=_VOLUME_MOUNT, retries=_PREEMPT_RETRIES)
 def profile_a10(
     models: list[str], batch_sizes: list[int], seq_lens: list[int],
-    warmup: int, runs: int,
+    warmup: int, runs: int, out_basename: str | None = None,
 ) -> bytes:
-    return _run_profiling("a10", models, batch_sizes, seq_lens, warmup, runs)
+    return _run_profiling("a10", models, batch_sizes, seq_lens, warmup, runs, out_basename)
 
 
-@app.function(gpu="A100-40GB", timeout=3600)
+@app.function(gpu="A100-40GB", timeout=3600, volumes=_VOLUME_MOUNT, retries=_PREEMPT_RETRIES)
 def profile_a100_40gb(
     models: list[str], batch_sizes: list[int], seq_lens: list[int],
-    warmup: int, runs: int,
+    warmup: int, runs: int, out_basename: str | None = None,
 ) -> bytes:
-    return _run_profiling("a100", models, batch_sizes, seq_lens, warmup, runs)
+    return _run_profiling("a100", models, batch_sizes, seq_lens, warmup, runs, out_basename)
 
 
-@app.function(gpu="H100!", timeout=3600)
+@app.function(gpu="H100!", timeout=3600, volumes=_VOLUME_MOUNT, retries=_PREEMPT_RETRIES)
 def profile_h100(
     models: list[str], batch_sizes: list[int], seq_lens: list[int],
-    warmup: int, runs: int,
+    warmup: int, runs: int, out_basename: str | None = None,
 ) -> bytes:
     """``H100!`` forces Modal to actually give us H100 (no auto-upgrade to H200)."""
-    return _run_profiling("h100", models, batch_sizes, seq_lens, warmup, runs)
+    return _run_profiling("h100", models, batch_sizes, seq_lens, warmup, runs, out_basename)
 
 
-@app.function(gpu="H200", timeout=3600)
+@app.function(gpu="H200", timeout=3600, volumes=_VOLUME_MOUNT, retries=_PREEMPT_RETRIES)
 def profile_h200(
     models: list[str], batch_sizes: list[int], seq_lens: list[int],
-    warmup: int, runs: int,
+    warmup: int, runs: int, out_basename: str | None = None,
 ) -> bytes:
-    return _run_profiling("h200", models, batch_sizes, seq_lens, warmup, runs)
+    return _run_profiling("h200", models, batch_sizes, seq_lens, warmup, runs, out_basename)
 
 
-@app.function(gpu="B200", timeout=3600)
+@app.function(gpu="B200", timeout=3600, volumes=_VOLUME_MOUNT, retries=_PREEMPT_RETRIES)
 def profile_b200(
     models: list[str], batch_sizes: list[int], seq_lens: list[int],
-    warmup: int, runs: int,
+    warmup: int, runs: int, out_basename: str | None = None,
 ) -> bytes:
-    return _run_profiling("b200", models, batch_sizes, seq_lens, warmup, runs)
+    return _run_profiling("b200", models, batch_sizes, seq_lens, warmup, runs, out_basename)
 
 
 # --- Local entrypoint --------------------------------------------------------
@@ -183,13 +211,19 @@ def main(
         raise SystemExit(f"unknown gpu-sku: {gpu_sku}. Known: {', '.join(dispatchers)}")
 
     fn = dispatchers[gpu_sku]
+    # CSV name inside the persistent Volume. Use the local output's basename
+    # so multiple runs on the same SKU (e.g. split gpt2-large vs other models)
+    # land in separate files.
+    out_path = Path(output) if output else Path(f"data/raw/{gpu_sku.replace('-', '_')}.csv")
+    out_basename = out_path.name
+
     print(f"dispatching to {gpu_sku}: {len(model_list)} models × {len(bs_list)} batches × {len(sl_list)} seqs")
+    print(f"  Modal Volume CSV: /csvs/{out_basename}")
     csv_bytes = fn.remote(
         models=model_list, batch_sizes=bs_list, seq_lens=sl_list,
-        warmup=warmup, runs=runs,
+        warmup=warmup, runs=runs, out_basename=out_basename,
     )
 
-    out_path = Path(output) if output else Path(f"data/raw/{gpu_sku.replace('-', '_')}.csv")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(csv_bytes)
     rows = csv_bytes.count(b"\n") - 1
