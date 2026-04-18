@@ -1,0 +1,47 @@
+{
+  "split": "zero-shot=h200",
+  "epochs": 50,
+  "backbone": "gat",
+  "constant_h": false,
+  "few_shot_samples": 0,
+  "filter_noisy": false,
+  "metrics": [
+    {
+      "method": "Roofline",
+      "mape": 98.04,
+      "spearman": 0.551,
+      "top1": 1.0
+    },
+    {
+      "method": "Per-graph mean",
+      "mape": 381.95,
+      "spearman": 0.771,
+      "top1": 1.0
+    },
+    {
+      "method": "Pooled MLP",
+      "mape": 57.92,
+      "spearman": 0.523,
+      "top1": 0.0
+    },
+    {
+      "method": "XGBoost",
+      "mape": 12.04,
+      "spearman": 0.976,
+      "top1": 1.0
+    },
+    {
+      "method": "Per-kernel MLP",
+      "mape": 57.37,
+      "spearman": 0.847,
+      "top1": 1.0
+    },
+    {
+      "method": "GNN (gat)",
+      "mape": 45.22,
+      "spearman": 0.574,
+      "top1": 1.0
+    }
+  ],
+  "raw_log_path": "/results/zero_shot_h200_gat_e50.json.log"
+}

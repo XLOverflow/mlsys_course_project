@@ -1,0 +1,47 @@
+{
+  "split": "leave-model=bert-large",
+  "epochs": 50,
+  "backbone": "gat",
+  "constant_h": false,
+  "few_shot_samples": 0,
+  "filter_noisy": false,
+  "metrics": [
+    {
+      "method": "Roofline",
+      "mape": 96.05,
+      "spearman": 0.867,
+      "top1": 0.0
+    },
+    {
+      "method": "Per-graph mean",
+      "mape": 177.06,
+      "spearman": 0.771,
+      "top1": 0.0
+    },
+    {
+      "method": "Pooled MLP",
+      "mape": 48.71,
+      "spearman": 0.779,
+      "top1": 0.0
+    },
+    {
+      "method": "XGBoost",
+      "mape": 50.75,
+      "spearman": 0.97,
+      "top1": 0.0
+    },
+    {
+      "method": "Per-kernel MLP",
+      "mape": 115.05,
+      "spearman": 0.672,
+      "top1": 0.0
+    },
+    {
+      "method": "GNN (gat)",
+      "mape": 30.97,
+      "spearman": 0.903,
+      "top1": 0.0
+    }
+  ],
+  "raw_log_path": "/results/leave_model_bert_large_gat_e50.json.log"
+}

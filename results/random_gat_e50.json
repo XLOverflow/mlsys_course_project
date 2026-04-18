@@ -1,0 +1,47 @@
+{
+  "split": "random",
+  "epochs": 50,
+  "backbone": "gat",
+  "constant_h": false,
+  "few_shot_samples": 0,
+  "filter_noisy": false,
+  "metrics": [
+    {
+      "method": "Roofline",
+      "mape": 94.38,
+      "spearman": 0.664,
+      "top1": 0.0
+    },
+    {
+      "method": "Per-graph mean",
+      "mape": 265.73,
+      "spearman": 0.727,
+      "top1": 0.0
+    },
+    {
+      "method": "Pooled MLP",
+      "mape": 189.55,
+      "spearman": 0.801,
+      "top1": 0.0
+    },
+    {
+      "method": "XGBoost",
+      "mape": 8.82,
+      "spearman": 0.988,
+      "top1": 1.0
+    },
+    {
+      "method": "Per-kernel MLP",
+      "mape": 127.72,
+      "spearman": 0.367,
+      "top1": 0.0
+    },
+    {
+      "method": "GNN (gat)",
+      "mape": 34.72,
+      "spearman": 0.916,
+      "top1": 0.0
+    }
+  ],
+  "raw_log_path": "/results/random_gat_e50.json.log"
+}
