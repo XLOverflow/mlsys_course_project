@@ -4,7 +4,12 @@
 >
 > **Scope 对齐（2026-04-17）**：GPU-only cross-generation、测 forward-pass latency、Transformer 家族、HF eager mode。不收集 CPU placement / ResNet / torch.compile 数据。详见 [two_week_execution_plan.md §1](two_week_execution_plan.md)。
 >
-> **实现状态（2026-04-17）**：profiling 框架 ✅ 已实现（[scripts/run_profiling.py](scripts/run_profiling.py)）；CSV schema 20 列 ✅ 全部填写；OOM/preemption/SKU-upgrade 护栏 ✅ 全部就位；本地 CPU dry-run 已验证通过。等 Day 3 上 GPU 采真数据。
+> **实现状态（2026-04-17 → 2026-04-18 更新）**：
+>
+> - profiling 框架 ✅ 已实现（[scripts/run_profiling.py](scripts/run_profiling.py)）；CSV schema 20 列 ✅ 全部填写；OOM/preemption/SKU-upgrade 护栏 ✅ 全部就位
+> - **数据采集 ✅ 完成**：7 个 GPU（T4/A100/A10G/L4/H100/H200/B200）× 6 个模型 = **1903 有效样本**（超额完成计划 1500+）
+> - V100 (PSC) 未启动——非 blocker，已有 7 GPU 覆盖 5 个架构代际（Turing→Ampere→Ada→Hopper→Blackwell）
+> - 下游 16 轮 v2 训练 sweep ✅ 完成（Phase 6），详见 [results/EXPERIMENTS.md](results/EXPERIMENTS.md)
 
 ## 1. 我们到底在收集什么
 

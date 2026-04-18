@@ -1,8 +1,27 @@
 # 研究思路评审：跨异构 GPU 的 LLM 推理代价模型
 
 > 基于 `two_week_execution_plan.md`、`data_collection_plan.md`、`src/hetero_cost_model/` 代码的综合评审
-> 初稿日期：2026-04-16；scope 决策对齐日期：2026-04-17
+> 初稿日期：2026-04-16；scope 决策对齐日期：2026-04-17；**Phase 6 完成 2026-04-18**
 > 评审标准：**CMU 15-442 MLSys 期末 project**（非论文投稿），两周冲刺、3 人团队。借鉴已有论文架构 OK，关注点是"方法自洽 + 数据干净 + 有一小块自己的贡献"，不是"完全原创"。
+
+---
+
+## 📌 2026-04-18 Phase 6 更新：实验完成后的 claim 重排
+
+**16 轮 v2 sweep 完成**（全部在 Modal H100，50 epochs）。关键发现重排了 claim 层级：
+
+| Claim | 初稿预期 | Phase 6 实证 |
+|---|---|---|
+| **C1**（learned > baselines） | 主 claim | ✅ **6/6 leave-model-out 全部成立**，GNN 胜 XGBoost 13.7–104.7 MAPE 点 |
+| **C2**（spec-only zero-shot to Blackwell） | Hero claim | ⚠️ **达标但 XGBoost 更强**：B200 zero-shot 27.9% < 30% 阈值，但 XGBoost 在 zero-shot 硬件 split 上稳定 4.4–12.7% |
+| **C3**（graph structure marginal） | 辅助 claim | ✅ **Per-kernel MLP 在 6 个 split 上 44–1093% 不稳定**，GNN 稳定 20–33%，graph 结构 load-bearing |
+
+**战略调整**：
+- **主论点改为 "GNN for graph generalization"**（C1 + C3），而非原版的硬件外推
+- 发现"GNN 的价值维度是未见图而非未见硬件"比硬撑 C2 更有课程项目发现感
+- §5.5 Limitations 诚实记录：v2 架构在"未见图" vs "未见硬件"间有 trade-off（leave-gpu=h100 从 v1 46.5% → v2 67.8% 退步）
+
+详细 Phase 6 结果：[results/EXPERIMENTS.md](results/EXPERIMENTS.md) §6.1–§6.10。
 
 ## 相对 proposal 的 scope 4 项决策（2026-04-17 对齐）
 
