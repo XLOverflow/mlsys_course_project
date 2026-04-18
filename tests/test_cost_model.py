@@ -5,21 +5,26 @@ pytest.importorskip("torch_geometric")
 
 from torch_geometric.data import Batch, Data
 
-from hetero_cost_model.graph import NODE_FEATURE_DIM
+from hetero_cost_model.graph import GRAPH_GLOBAL_FEATURE_DIM, NODE_FEATURE_DIM
 from hetero_cost_model.hardware import HARDWARE_FEATURE_DIM
 from hetero_cost_model.models import CostModel, MLPCostModel
 from hetero_cost_model.strategies import CONFIG_FEATURE_DIM
 
 
 def _fake_data(n_nodes: int = 6) -> Data:
-    """Fake graph: node features only; s and h are graph-level."""
+    """Fake graph: node features + 4 graph-level vectors (s, h, g) matching
+    the schema produced by ``hetero_cost_model.data.sample_to_pyg``.
+    ``g`` is the graph-global summary (log1p flops/mem/nodes/edges) consumed
+    by CostModel / MLPCostModel / PerKernelMLP when global_skip=True."""
     x = torch.randn(n_nodes, NODE_FEATURE_DIM)
     src = list(range(n_nodes - 1))
     dst = list(range(1, n_nodes))
     edge_index = torch.tensor([src, dst], dtype=torch.long)
     s = torch.rand(CONFIG_FEATURE_DIM)
     h = torch.rand(HARDWARE_FEATURE_DIM)
-    return Data(x=x, edge_index=edge_index, s=s, h=h, y=torch.tensor([5.0]))
+    g = torch.rand(GRAPH_GLOBAL_FEATURE_DIM)
+    return Data(x=x, edge_index=edge_index, s=s, h=h, g=g,
+                y=torch.tensor([5.0]))
 
 
 def test_gat_forward_shape():
@@ -44,9 +49,11 @@ def test_different_hardware_gives_different_output():
     model.eval()
     base = _fake_data()
     d1 = Data(x=base.x, edge_index=base.edge_index,
-               s=base.s, h=torch.zeros(HARDWARE_FEATURE_DIM), y=base.y)
+               s=base.s, h=torch.zeros(HARDWARE_FEATURE_DIM),
+               g=base.g, y=base.y)
     d2 = Data(x=base.x, edge_index=base.edge_index,
-               s=base.s, h=torch.ones(HARDWARE_FEATURE_DIM), y=base.y)
+               s=base.s, h=torch.ones(HARDWARE_FEATURE_DIM),
+               g=base.g, y=base.y)
     with torch.no_grad():
         o1 = model(Batch.from_data_list([d1]))
         o2 = model(Batch.from_data_list([d2]))

@@ -65,6 +65,23 @@ def parse_args() -> argparse.Namespace:
                    help="Dropout rate used in GNN + ablation MLPs")
     p.add_argument("--ranking-lambda", type=float, default=0.1,
                    help="Weight of the pairwise ranking loss added to MSE")
+    # --- GNN v2 architecture switches ---
+    p.add_argument("--gnn-node-level-sh", type=int, default=1,
+                   choices=[0, 1],
+                   help="Inject s/h into node features before GAT (default 1). "
+                        "Set to 0 for v1 behavior (s/h only at head).")
+    p.add_argument("--gnn-readout", default="sum", choices=["sum", "mean_max"],
+                   help="Graph readout: sum preserves latency's additive "
+                        "structure (default). mean_max is legacy v1.")
+    p.add_argument("--gnn-global-skip", type=int, default=1,
+                   choices=[0, 1],
+                   help="Concat Roofline-style global summary (log flops/mem/"
+                        "nodes/edges) into head input (default 1).")
+    p.add_argument("--ablation-global-skip", type=int, default=1,
+                   choices=[0, 1],
+                   help="Whether Pooled MLP / Per-kernel MLP baselines also "
+                        "receive the global summary skip (default 1). "
+                        "Set to 0 for a fair 'pre-v2' ablation comparison.")
     p.add_argument("--constant-h", action="store_true",
                    help="Constant-h ablation: replace each sample's hardware "
                         "vector with the train-split mean. Diagnoses whether "
@@ -248,11 +265,13 @@ def run_gnn(
     train_samples: Sequence[Sample], test_samples: Sequence[Sample],
     backbone: str, cfg: TrainConfig,
     hidden_dim: int = 64, num_layers: int = 2, dropout: float = 0.1,
+    node_level_sh: bool = True, readout: str = "sum", global_skip: bool = True,
 ) -> Report:
     torch.manual_seed(0)
     model = CostModel(
         hidden_dim=hidden_dim, num_layers=num_layers,
         backbone=backbone, dropout=dropout,
+        node_level_sh=node_level_sh, readout=readout, global_skip=global_skip,
     )
     train(model, LatencyDataset(list(train_samples)), cfg)
     pred, true = predict(model, LatencyDataset(list(test_samples)), device=cfg.device)
@@ -263,12 +282,13 @@ def run_pooled_mlp(
     train_samples: Sequence[Sample], test_samples: Sequence[Sample],
     cfg: TrainConfig,
     hidden_dim: int = 256,
+    global_skip: bool = True,
 ) -> Report:
     """Pooled-MLP baseline: mean-pool node features, then [pool | s | h] → MLP.
     Loses both node-level granularity and graph structure; serves as the
     weakest learned baseline in Table 1."""
     torch.manual_seed(0)
-    model = MLPCostModel(hidden_dim=hidden_dim)
+    model = MLPCostModel(hidden_dim=hidden_dim, global_skip=global_skip)
     train(model, LatencyDataset(list(train_samples)), cfg)
     pred, true = predict(model, LatencyDataset(list(test_samples)), device=cfg.device)
     return Report("Pooled MLP", pred, true)
@@ -278,6 +298,7 @@ def run_per_kernel_mlp(
     train_samples: Sequence[Sample], test_samples: Sequence[Sample],
     cfg: TrainConfig,
     hidden_dim: int = 64, dropout: float = 0.1,
+    global_skip: bool = True,
 ) -> Report:
     """Per-kernel sum MLP: GNN w/o edges (Table 3 row 1).
     Each node's latency predicted independently by MLP([op|s|h]); graph
@@ -285,7 +306,9 @@ def run_per_kernel_mlp(
     structure vs. per-op features."""
     from hetero_cost_model.models.per_kernel_mlp import PerKernelMLPCostModel
     torch.manual_seed(0)
-    model = PerKernelMLPCostModel(hidden_dim=hidden_dim, dropout=dropout)
+    model = PerKernelMLPCostModel(
+        hidden_dim=hidden_dim, dropout=dropout, global_skip=global_skip,
+    )
     train(model, LatencyDataset(list(train_samples)), cfg)
     pred, true = predict(model, LatencyDataset(list(test_samples)), device=cfg.device)
     return Report("Per-kernel MLP", pred, true)
@@ -409,14 +432,20 @@ def main() -> int:
     print("\nTraining/evaluating ...")
     reports.append(run_roofline(te))
     reports.append(run_per_graph_mean(tr, te))
-    reports.append(run_pooled_mlp(tr, te, cfg))
+    reports.append(run_pooled_mlp(
+        tr, te, cfg, global_skip=bool(args.ablation_global_skip),
+    ))
     reports.append(run_xgboost(tr, te))
     reports.append(run_per_kernel_mlp(
         tr, te, cfg, hidden_dim=args.hidden_dim, dropout=args.dropout,
+        global_skip=bool(args.ablation_global_skip),
     ))
     reports.append(run_gnn(
         tr, te, args.backbone, cfg,
         hidden_dim=args.hidden_dim, num_layers=args.num_layers, dropout=args.dropout,
+        node_level_sh=bool(args.gnn_node_level_sh),
+        readout=args.gnn_readout,
+        global_skip=bool(args.gnn_global_skip),
     ))
 
     print("\n" + "-" * 72)

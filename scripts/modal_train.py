@@ -66,6 +66,10 @@ def train_on_h100(
     num_layers: int = 2,
     dropout: float = 0.1,
     ranking_lambda: float = 0.1,
+    gnn_node_level_sh: bool = True,
+    gnn_readout: str = "sum",
+    gnn_global_skip: bool = True,
+    ablation_global_skip: bool = True,
     constant_h: bool = False,
     few_shot_samples: int = 0,
     filter_noisy: bool = False,
@@ -97,6 +101,10 @@ def train_on_h100(
         "--num-layers", str(num_layers),
         "--dropout", str(dropout),
         "--ranking-lambda", str(ranking_lambda),
+        "--gnn-node-level-sh", "1" if gnn_node_level_sh else "0",
+        "--gnn-readout", gnn_readout,
+        "--gnn-global-skip", "1" if gnn_global_skip else "0",
+        "--ablation-global-skip", "1" if ablation_global_skip else "0",
         "--seed", str(seed),
         "--device", "cuda",
     ]
@@ -172,6 +180,10 @@ def main(
     num_layers: int = 2,
     dropout: float = 0.1,
     ranking_lambda: float = 0.1,
+    gnn_node_level_sh: bool = True,
+    gnn_readout: str = "sum",
+    gnn_global_skip: bool = True,
+    ablation_global_skip: bool = True,
     constant_h: bool = False,
     few_shot_samples: int = 0,
     filter_noisy: bool = False,
@@ -192,6 +204,11 @@ def main(
     if num_layers != 2:    extras.append(f"L{num_layers}")
     if dropout != 0.1:     extras.append(f"drop{dropout}")
     if ranking_lambda != 0.1:  extras.append(f"rank{ranking_lambda}")
+    # GNN v2 switches — only encode when they differ from the v2 defaults
+    if not gnn_node_level_sh:    extras.append("no_node_sh")
+    if gnn_readout != "sum":     extras.append(f"ro_{gnn_readout}")
+    if not gnn_global_skip:      extras.append("no_gskip")
+    if not ablation_global_skip: extras.append("abl_no_gskip")
     suffix = "__" + "_".join(extras) if extras else ""
     default_name = f"{safe_split}_{backbone}_e{epochs}{suffix}.json"
     out_basename = default_name
@@ -211,6 +228,10 @@ def main(
         backbone=backbone,
         hidden_dim=hidden_dim, num_layers=num_layers,
         dropout=dropout, ranking_lambda=ranking_lambda,
+        gnn_node_level_sh=gnn_node_level_sh,
+        gnn_readout=gnn_readout,
+        gnn_global_skip=gnn_global_skip,
+        ablation_global_skip=ablation_global_skip,
         constant_h=constant_h,
         few_shot_samples=few_shot_samples, filter_noisy=filter_noisy,
         seed=seed, out_basename=out_basename,

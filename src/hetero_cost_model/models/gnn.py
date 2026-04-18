@@ -1,14 +1,30 @@
 """GNN-based cost model with pluggable GAT / Graph-Transformer backbone.
 
-Architecture:
-  1. Node feature projection (op structure only, no s/h per node)
-  2. N-layer GNN (message passing over compute graph edges)
-  3. Graph readout: mean + max pooling → concatenated
-  4. Concatenate graph-level s (config) and h (hardware) vectors
-  5. MLP head → predicted latency scalar T̂
+Default (v2) architecture, rewritten 2026-04-17 to beat a strong tabular
+XGBoost baseline:
 
-s and h are injected after readout so node representations stay
-architecture-specific; the global features modulate the final prediction.
+  1. **Per-node s/h injection** — the inference config and hardware vector
+     are broadcast to every node and concatenated into node features BEFORE
+     the GAT layers. Message passing can then learn hardware-dependent
+     patterns (e.g. "attention on low-bandwidth GPUs runs disproportionately
+     slow"). This follows Akhauri & Abdelfattah (MLSys'24)'s OPHW design.
+
+  2. **Sum readout** instead of mean+max pool. Latency is physically
+     additive over ops (prefill executes kernels sequentially), so the
+     readout should preserve totals, not normalize them away. mean_pool
+     = avg per-op latency loses the "gpt2-large has 3× more ops than
+     gpt2-small" signal.
+
+  3. **Global-summary skip connection** — [log1p(total_flops),
+     log1p(total_memory_bytes), log1p(num_nodes), log1p(num_edges)] is
+     concatenated to the head input. These are the Roofline inputs that
+     XGBoost already gets directly; with this skip, the GNN head doesn't
+     have to reconstruct totals from per-node features, and message
+     passing only needs to learn the *residual* on top of the Roofline
+     approximation.
+
+Each of the three changes is independently toggleable so Table 3's
+"v1 vs v2" can be broken down per-component in an ablation.
 """
 from __future__ import annotations
 
@@ -20,16 +36,18 @@ import torch.nn.functional as F
 from torch_geometric.nn import (
     GATConv,
     TransformerConv,
+    global_add_pool,
     global_max_pool,
     global_mean_pool,
 )
 
-from hetero_cost_model.graph import NODE_FEATURE_DIM
+from hetero_cost_model.graph import GRAPH_GLOBAL_FEATURE_DIM, NODE_FEATURE_DIM
 from hetero_cost_model.hardware import HARDWARE_FEATURE_DIM
 from hetero_cost_model.strategies import CONFIG_FEATURE_DIM
 
 
 Backbone = Literal["gat", "transformer"]
+Readout = Literal["sum", "mean_max"]
 
 _BACKBONES = {"gat": GATConv, "transformer": TransformerConv}
 
@@ -47,21 +65,27 @@ class CostModel(nn.Module):
         node_in_dim: int = NODE_FEATURE_DIM,
         config_dim: int = CONFIG_FEATURE_DIM,
         hardware_dim: int = HARDWARE_FEATURE_DIM,
+        # ---- v2 defaults (v1 to revert: node_level_sh=False, readout="mean_max", global_skip=False) ----
+        node_level_sh: bool = True,
+        readout: Readout = "sum",
+        global_skip: bool = True,
     ):
-        # Defaults sized for 1500-2500 sample regime (data_collection_plan.md
-        # §2.3). Earlier draft used hidden=128/num_layers=3 (~155 K params);
-        # at the training-data scale this likely over-parameterizes the model
-        # and lets the hardware branch memorize the few training anchors.
-        # hidden=64/num_layers=2 gives ~78 K params — still large for 1.5 K
-        # samples but markedly healthier. Can be overridden via CLI for
-        # ablation (e.g. ``--hidden 128`` to reproduce the old capacity).
         super().__init__()
         if backbone not in _BACKBONES:
             raise ValueError(f"unknown backbone: {backbone}")
+        if readout not in ("sum", "mean_max"):
+            raise ValueError(f"unknown readout: {readout}")
 
         self.dropout = dropout
-        self.input_proj = nn.Linear(node_in_dim, hidden_dim)
+        self.node_level_sh = node_level_sh
+        self.readout = readout
+        self.global_skip = global_skip
 
+        # (a) Input projection — input dim grows if we inject s/h per-node
+        in_dim = node_in_dim + (config_dim + hardware_dim if node_level_sh else 0)
+        self.input_proj = nn.Linear(in_dim, hidden_dim)
+
+        # (b) GAT / Transformer conv stack
         conv_cls = _BACKBONES[backbone]
         head_dim = hidden_dim // heads
         self.convs = nn.ModuleList([
@@ -69,8 +93,11 @@ class CostModel(nn.Module):
             for _ in range(num_layers)
         ])
 
-        # readout produces hidden_dim*2; then we append s and h
-        head_in = hidden_dim * 2 + config_dim + hardware_dim
+        # (c) Head input = readout(node_repr) + s + h + [optional] global_skip
+        readout_dim = hidden_dim if readout == "sum" else hidden_dim * 2
+        head_in = readout_dim + config_dim + hardware_dim
+        if global_skip:
+            head_in += GRAPH_GLOBAL_FEATURE_DIM
         self.head = nn.Sequential(
             nn.Linear(head_in, 256),
             nn.ReLU(),
@@ -80,25 +107,48 @@ class CostModel(nn.Module):
             nn.Linear(128, 1),
         )
 
+    # --- helpers -------------------------------------------------------------
+
+    def _broadcast_to_nodes(self, data, graph_attr: torch.Tensor) -> torch.Tensor:
+        """Given a graph-level attribute of shape [B*D] (PyG flattens across
+        the batch dim when it concatenates Data objects), reshape to [B, D]
+        and index with ``data.batch`` to produce a per-node [N, D] tensor."""
+        b = int(data.batch.max().item()) + 1 if data.batch.numel() > 0 else 1
+        return graph_attr.view(b, -1)[data.batch]
+
+    # --- forward -------------------------------------------------------------
+
     def forward(self, data) -> torch.Tensor:
-        x = F.relu(self.input_proj(data.x))
+        # (a) Per-node s/h injection BEFORE the GAT stack
+        if self.node_level_sh:
+            s_per_node = self._broadcast_to_nodes(data, data.s)
+            h_per_node = self._broadcast_to_nodes(data, data.h)
+            x = torch.cat([data.x, s_per_node, h_per_node], dim=-1)
+        else:
+            x = data.x
+
+        x = F.relu(self.input_proj(x))
         for conv in self.convs:
             x = F.relu(conv(x, data.edge_index))
 
-        pooled = torch.cat(
-            [global_mean_pool(x, data.batch), global_max_pool(x, data.batch)],
-            dim=-1,
-        )  # [B, hidden_dim*2]
+        # (b) Readout — sum preserves additive scale; mean_max is legacy v1
+        if self.readout == "sum":
+            pooled = global_add_pool(x, data.batch)
+        else:
+            pooled = torch.cat(
+                [global_mean_pool(x, data.batch), global_max_pool(x, data.batch)],
+                dim=-1,
+            )
 
-        # PyG concatenates graph-level attrs along dim=0 when batching,
-        # so data.s is [B*config_dim] and must be reshaped to [B, config_dim].
+        # (c) Build head input — always include graph-level s and h; optionally
+        # concat the Roofline-style global summary so the head has a direct
+        # (non-reconstructed) view of total_flops / total_memory / counts.
         b = pooled.size(0)
-        combined = torch.cat([
-            pooled,
-            data.s.view(b, -1),
-            data.h.view(b, -1),
-        ], dim=-1)
+        parts = [pooled, data.s.view(b, -1), data.h.view(b, -1)]
+        if self.global_skip:
+            parts.append(data.g.view(b, -1))
+        combined = torch.cat(parts, dim=-1)
         return self.head(combined).squeeze(-1)
 
 
-__all__ = ["CostModel", "Backbone"]
+__all__ = ["CostModel", "Backbone", "Readout"]
