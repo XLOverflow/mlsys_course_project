@@ -28,7 +28,11 @@ from typing import Dict, List, Optional
 import torch
 from torch_geometric.data import Data, Dataset
 
-from hetero_cost_model.graph import GraphRepr
+from hetero_cost_model.graph import (
+    GRAPH_GLOBAL_FEATURE_DIM,
+    GraphRepr,
+    graph_global_features,
+)
 from hetero_cost_model.hardware import HARDWARE_REGISTRY, Hardware
 from hetero_cost_model.runtime_info import gpu_name_to_registry_key
 from hetero_cost_model.strategies import InferenceConfig
@@ -46,10 +50,22 @@ class Sample:
 
 
 def sample_to_pyg(sample: Sample) -> Data:
-    """Convert one :class:`Sample` into a PyG ``Data`` object."""
+    """Convert one :class:`Sample` into a PyG ``Data`` object.
+
+    Attached graph-level attributes:
+
+    - ``s`` : inference config [CONFIG_FEATURE_DIM] — (batch, seq) normalized
+    - ``h`` : hardware features [HARDWARE_FEATURE_DIM] — 5-dim spec vector
+    - ``g`` : graph-global summary [GRAPH_GLOBAL_FEATURE_DIM] — log1p of
+      (total_flops, total_memory_bytes, num_nodes, num_edges). Mirrors the
+      tabular features XGBoost gets; models can optionally concat ``g`` to
+      their readout so they don't have to re-derive totals from per-node
+      features.
+    """
     x = torch.tensor(sample.graph.node_feature_matrix(), dtype=torch.float)
     s = torch.tensor(sample.config.to_vector(), dtype=torch.float)
     h = torch.tensor(sample.hardware.to_vector(), dtype=torch.float)
+    g = torch.tensor(graph_global_features(sample.graph), dtype=torch.float)
     y = torch.tensor([sample.latency_ms], dtype=torch.float)
 
     if sample.graph.edges:
@@ -57,7 +73,7 @@ def sample_to_pyg(sample: Sample) -> Data:
     else:
         edge_index = torch.empty(2, 0, dtype=torch.long)
 
-    return Data(x=x, edge_index=edge_index, s=s, h=h, y=y)
+    return Data(x=x, edge_index=edge_index, s=s, h=h, g=g, y=y)
 
 
 class LatencyDataset(Dataset):

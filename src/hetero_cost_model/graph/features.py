@@ -57,4 +57,28 @@ class GraphRepr:
         return sum(n.memory_bytes for n in self.nodes)
 
 
-__all__ = ["NodeFeature", "GraphRepr"]
+# --- Graph-level "global summary" features ----------------------------------
+#
+# These four values mirror what XGBoost gets as tabular input (log1p of the
+# total compute / memory / node count / edge count). Used as a residual "skip
+# connection" into the GNN head so that the model has direct access to the
+# Roofline-style summary statistics; message passing then only needs to learn
+# the *residual* on top, not reconstruct scale from per-node features.
+
+GRAPH_GLOBAL_FEATURE_DIM: int = 4
+
+
+def graph_global_features(g: GraphRepr) -> List[float]:
+    """Four log1p scalars: total_flops, total_memory_bytes, num_nodes, num_edges."""
+    return [
+        math.log1p(max(g.total_flops(), 0.0)),
+        math.log1p(max(g.total_memory(), 0.0)),
+        math.log1p(g.num_nodes()),
+        math.log1p(len(g.edges)),
+    ]
+
+
+__all__ = [
+    "NodeFeature", "GraphRepr",
+    "GRAPH_GLOBAL_FEATURE_DIM", "graph_global_features",
+]
