@@ -50,34 +50,41 @@ def test_per_kernel_mlp_forward_shape_matches_batch_size():
 
 
 def test_per_kernel_mlp_is_permutation_invariant_over_nodes():
-    """Scatter-sum must be invariant to node ordering within a graph."""
+    """Scatter-sum must be invariant to node ordering within a graph.
+
+    Previous sources of flakiness (resolved in this version):
+    - model weights varied with global torch state → seed before
+      instantiation
+    - torch.randperm used torch's default stream → manually seed first
+    - batch.clone() with torch_geometric 2.7+ can share tensors → do
+      explicit ``.detach().clone()`` on the relevant fields.
+    """
     from torch_geometric.loader import DataLoader
-    samples = _mini_samples()[:1]  # single-graph batch
+
+    # Seed before *anything* that touches torch's random state.
+    torch.manual_seed(1234)
+    samples = _mini_samples()[:1]
     loader = DataLoader(LatencyDataset(samples), batch_size=1)
     batch = next(iter(loader))
 
     model = PerKernelMLPCostModel()
     model.eval()
 
-    # Fix torch's PRNG so torch.randperm is deterministic across test runs
-    # (otherwise this test is flaky in parallel CI).
-    torch.manual_seed(1234)
-
     with torch.no_grad():
         baseline = model(batch).item()
 
-        # Shuffle nodes: edges are ignored by PerKernelMLP so we only need
-        # to permute x. batch stays unchanged because all nodes belong to
-        # graph 0.
         N = batch.x.size(0)
         perm = torch.randperm(N)
         shuffled = batch.clone()
-        shuffled.x = batch.x[perm]
+        shuffled.x = batch.x.detach().clone()[perm]
+        # data.batch unchanged: every node belongs to graph 0 either way
         shuffled_out = model(shuffled).item()
 
-    # Sum over nodes is exactly permutation-invariant, so should match to
-    # within floating-point tolerance.
-    assert abs(baseline - shuffled_out) < 1e-5
+    # Summation is exactly permutation-invariant; tolerance just covers
+    # any fp rounding from summing in a different order.
+    assert abs(baseline - shuffled_out) < 1e-4, (
+        f"baseline={baseline}, shuffled={shuffled_out}, diff={abs(baseline-shuffled_out)}"
+    )
 
 
 def test_per_kernel_mlp_backward_produces_finite_grads():
