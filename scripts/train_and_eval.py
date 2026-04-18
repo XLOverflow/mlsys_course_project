@@ -57,6 +57,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--backbone", default="gat", choices=["gat", "transformer"])
+    p.add_argument("--hidden-dim", type=int, default=64,
+                   help="GNN / Per-kernel-MLP / Pooled-MLP hidden size")
+    p.add_argument("--num-layers", type=int, default=2,
+                   help="Number of GNN message-passing layers (GNN only)")
+    p.add_argument("--dropout", type=float, default=0.1,
+                   help="Dropout rate used in GNN + ablation MLPs")
+    p.add_argument("--ranking-lambda", type=float, default=0.1,
+                   help="Weight of the pairwise ranking loss added to MSE")
     p.add_argument("--constant-h", action="store_true",
                    help="Constant-h ablation: replace each sample's hardware "
                         "vector with the train-split mean. Diagnoses whether "
@@ -239,9 +247,13 @@ class Report:
 def run_gnn(
     train_samples: Sequence[Sample], test_samples: Sequence[Sample],
     backbone: str, cfg: TrainConfig,
+    hidden_dim: int = 64, num_layers: int = 2, dropout: float = 0.1,
 ) -> Report:
     torch.manual_seed(0)
-    model = CostModel(backbone=backbone)
+    model = CostModel(
+        hidden_dim=hidden_dim, num_layers=num_layers,
+        backbone=backbone, dropout=dropout,
+    )
     train(model, LatencyDataset(list(train_samples)), cfg)
     pred, true = predict(model, LatencyDataset(list(test_samples)), device=cfg.device)
     return Report(f"GNN ({backbone})", pred, true)
@@ -250,12 +262,13 @@ def run_gnn(
 def run_pooled_mlp(
     train_samples: Sequence[Sample], test_samples: Sequence[Sample],
     cfg: TrainConfig,
+    hidden_dim: int = 256,
 ) -> Report:
     """Pooled-MLP baseline: mean-pool node features, then [pool | s | h] → MLP.
     Loses both node-level granularity and graph structure; serves as the
     weakest learned baseline in Table 1."""
     torch.manual_seed(0)
-    model = MLPCostModel()
+    model = MLPCostModel(hidden_dim=hidden_dim)
     train(model, LatencyDataset(list(train_samples)), cfg)
     pred, true = predict(model, LatencyDataset(list(test_samples)), device=cfg.device)
     return Report("Pooled MLP", pred, true)
@@ -264,6 +277,7 @@ def run_pooled_mlp(
 def run_per_kernel_mlp(
     train_samples: Sequence[Sample], test_samples: Sequence[Sample],
     cfg: TrainConfig,
+    hidden_dim: int = 64, dropout: float = 0.1,
 ) -> Report:
     """Per-kernel sum MLP: GNN w/o edges (Table 3 row 1).
     Each node's latency predicted independently by MLP([op|s|h]); graph
@@ -271,7 +285,7 @@ def run_per_kernel_mlp(
     structure vs. per-op features."""
     from hetero_cost_model.models.per_kernel_mlp import PerKernelMLPCostModel
     torch.manual_seed(0)
-    model = PerKernelMLPCostModel()
+    model = PerKernelMLPCostModel(hidden_dim=hidden_dim, dropout=dropout)
     train(model, LatencyDataset(list(train_samples)), cfg)
     pred, true = predict(model, LatencyDataset(list(test_samples)), device=cfg.device)
     return Report("Per-kernel MLP", pred, true)
@@ -386,8 +400,10 @@ def main() -> int:
 
     cfg = TrainConfig(
         epochs=args.epochs, batch_size=args.batch_size, lr=args.lr,
-        ranking_lambda=0.1, device=args.device,
+        ranking_lambda=args.ranking_lambda, device=args.device,
     )
+    print(f"\n  hyperparams: hidden={args.hidden_dim} layers={args.num_layers} "
+          f"dropout={args.dropout} ranking_lambda={args.ranking_lambda}")
 
     reports: List[Report] = []
     print("\nTraining/evaluating ...")
@@ -395,8 +411,13 @@ def main() -> int:
     reports.append(run_per_graph_mean(tr, te))
     reports.append(run_pooled_mlp(tr, te, cfg))
     reports.append(run_xgboost(tr, te))
-    reports.append(run_per_kernel_mlp(tr, te, cfg))
-    reports.append(run_gnn(tr, te, args.backbone, cfg))
+    reports.append(run_per_kernel_mlp(
+        tr, te, cfg, hidden_dim=args.hidden_dim, dropout=args.dropout,
+    ))
+    reports.append(run_gnn(
+        tr, te, args.backbone, cfg,
+        hidden_dim=args.hidden_dim, num_layers=args.num_layers, dropout=args.dropout,
+    ))
 
     print("\n" + "-" * 72)
     print(f"{'Method':<18}  {'MAPE':>8}  {'Spearman':>10}  {'Top-1':>8}")

@@ -62,6 +62,10 @@ def train_on_h100(
     batch_size: int = 32,
     lr: float = 1e-3,
     backbone: str = "gat",
+    hidden_dim: int = 64,
+    num_layers: int = 2,
+    dropout: float = 0.1,
+    ranking_lambda: float = 0.1,
     constant_h: bool = False,
     few_shot_samples: int = 0,
     filter_noisy: bool = False,
@@ -89,6 +93,10 @@ def train_on_h100(
         "--batch-size", str(batch_size),
         "--lr", str(lr),
         "--backbone", backbone,
+        "--hidden-dim", str(hidden_dim),
+        "--num-layers", str(num_layers),
+        "--dropout", str(dropout),
+        "--ranking-lambda", str(ranking_lambda),
         "--seed", str(seed),
         "--device", "cuda",
     ]
@@ -160,6 +168,10 @@ def main(
     batch_size: int = 32,
     lr: float = 1e-3,
     backbone: str = "gat",
+    hidden_dim: int = 64,
+    num_layers: int = 2,
+    dropout: float = 0.1,
+    ranking_lambda: float = 0.1,
     constant_h: bool = False,
     few_shot_samples: int = 0,
     filter_noisy: bool = False,
@@ -175,11 +187,18 @@ def main(
         extras.append(f"fs{few_shot_samples}")
     if filter_noisy:
         extras.append("filtered")
+    # Non-default hyperparams go into filename so we can diff runs.
+    if hidden_dim != 64:   extras.append(f"h{hidden_dim}")
+    if num_layers != 2:    extras.append(f"L{num_layers}")
+    if dropout != 0.1:     extras.append(f"drop{dropout}")
+    if ranking_lambda != 0.1:  extras.append(f"rank{ranking_lambda}")
     suffix = "__" + "_".join(extras) if extras else ""
     default_name = f"{safe_split}_{backbone}_e{epochs}{suffix}.json"
     out_basename = default_name
 
     print(f"dispatching to H100: split={split} epochs={epochs} backbone={backbone}")
+    print(f"  hyperparams: hidden={hidden_dim} layers={num_layers} "
+          f"dropout={dropout} rank_lambda={ranking_lambda}")
     if constant_h:
         print("  --constant-h (Table 3 row 2 ablation)")
     if few_shot_samples > 0:
@@ -189,7 +208,10 @@ def main(
 
     result = train_on_h100.remote(
         split=split, epochs=epochs, batch_size=batch_size, lr=lr,
-        backbone=backbone, constant_h=constant_h,
+        backbone=backbone,
+        hidden_dim=hidden_dim, num_layers=num_layers,
+        dropout=dropout, ranking_lambda=ranking_lambda,
+        constant_h=constant_h,
         few_shot_samples=few_shot_samples, filter_noisy=filter_noisy,
         seed=seed, out_basename=out_basename,
     )
