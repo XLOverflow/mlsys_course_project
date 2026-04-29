@@ -7,7 +7,7 @@ Once the 7 Modal jobs complete, run this to:
   3. Run train_and_eval-style baselines (Roofline, XGBoost, GNN) on the
      decode data via leave-model-out
   4. Compare key MAPE numbers against the prefill counterparts in
-     [results/EXPERIMENTS.md](../results/EXPERIMENTS.md) so we can say
+     [docs/results.md](../docs/results.md) so we can say
      whether decode is harder/easier than prefill to predict, and which
      baseline does best.
 
@@ -27,7 +27,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--csv-dir", type=Path, default=Path("data/raw"))
-    p.add_argument("--out", type=Path, default=Path("results/decode_summary.md"))
+    p.add_argument("--out", type=Path, default=Path("results/decode_summary.txt"))
     return p.parse_args()
 
 
