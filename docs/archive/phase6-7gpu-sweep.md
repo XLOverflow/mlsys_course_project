@@ -1,7 +1,19 @@
-# Experiments Log
+# [Archived] Phase 6 — 7-GPU sweep (superseded)
 
-> 截至 2026-04-17 晚的所有训练实验、目的、结论。
-> 原始 JSON 文件在本目录同级。
+> ⚠️ **Superseded as of 2026-04-29.** This document records the original
+> 16-run training sweep on the **7-GPU** dataset (T4 / A10 / A100 / L4 /
+> H100 / H200 / B200), which was the project state through 2026-04-18.
+>
+> The final dataset was reduced to **5 GPUs** (A10 / A100 / B200 / H100 /
+> L4) — T4 was dropped after recurrent Modal worker stability issues
+> across both prefill and decode collection passes; H200 was dropped
+> after a measurement anomaly on gpt2-large decode that we did not
+> investigate. **For current numbers, see [../results.md](../results.md).**
+>
+> This file is kept for git-history continuity. The raw JSON files in
+> `results/` matching the 7-GPU sweep have not been deleted; the
+> 5-GPU re-runs overwrite the keys they share. Numbers below should be
+> read as historical, not as the project's claimed results.
 
 ---
 
