@@ -73,6 +73,7 @@ def _run_profiling(
     warmup: int,
     runs: int,
     out_basename: str | None = None,
+    mode: str = "prefill",
 ) -> bytes:
     """Install the local package, run the profiling driver, return CSV bytes.
 
@@ -80,6 +81,10 @@ def _run_profiling(
     preemption. The driver uses its own idempotent resume (``_existing_rows``)
     to skip configs already present in the CSV, turning a preempt → retry
     cycle into incremental checkpointing.
+
+    Pass ``mode="decode"`` to time per-token autoregressive decode
+    latency instead of full-prompt prefill latency. Encoder-only models
+    are auto-skipped in decode mode by run_profiling.py.
     """
     import os
     import subprocess
@@ -101,6 +106,7 @@ def _run_profiling(
         "--seq-lens", *[str(x) for x in seq_lens],
         "--warmup", str(warmup),
         "--runs", str(runs),
+        "--mode", mode,
         "--output", output_path,
     ]
     subprocess.check_call(cmd)
@@ -121,57 +127,64 @@ _PREEMPT_RETRIES = modal.Retries(max_retries=10, backoff_coefficient=1.0, initia
 def profile_t4(
     models: list[str], batch_sizes: list[int], seq_lens: list[int],
     warmup: int, runs: int, out_basename: str | None = None,
+    mode: str = "prefill",
 ) -> bytes:
-    return _run_profiling("t4", models, batch_sizes, seq_lens, warmup, runs, out_basename)
+    return _run_profiling("t4", models, batch_sizes, seq_lens, warmup, runs, out_basename, mode)
 
 
 @app.function(gpu="L4", timeout=3600, volumes=_VOLUME_MOUNT, retries=_PREEMPT_RETRIES)
 def profile_l4(
     models: list[str], batch_sizes: list[int], seq_lens: list[int],
     warmup: int, runs: int, out_basename: str | None = None,
+    mode: str = "prefill",
 ) -> bytes:
-    return _run_profiling("l4", models, batch_sizes, seq_lens, warmup, runs, out_basename)
+    return _run_profiling("l4", models, batch_sizes, seq_lens, warmup, runs, out_basename, mode)
 
 
 @app.function(gpu="A10", timeout=3600, volumes=_VOLUME_MOUNT, retries=_PREEMPT_RETRIES)
 def profile_a10(
     models: list[str], batch_sizes: list[int], seq_lens: list[int],
     warmup: int, runs: int, out_basename: str | None = None,
+    mode: str = "prefill",
 ) -> bytes:
-    return _run_profiling("a10", models, batch_sizes, seq_lens, warmup, runs, out_basename)
+    return _run_profiling("a10", models, batch_sizes, seq_lens, warmup, runs, out_basename, mode)
 
 
 @app.function(gpu="A100-40GB", timeout=3600, volumes=_VOLUME_MOUNT, retries=_PREEMPT_RETRIES)
 def profile_a100_40gb(
     models: list[str], batch_sizes: list[int], seq_lens: list[int],
     warmup: int, runs: int, out_basename: str | None = None,
+    mode: str = "prefill",
 ) -> bytes:
-    return _run_profiling("a100", models, batch_sizes, seq_lens, warmup, runs, out_basename)
+    return _run_profiling("a100", models, batch_sizes, seq_lens, warmup, runs, out_basename, mode)
 
 
 @app.function(gpu="H100!", timeout=3600, volumes=_VOLUME_MOUNT, retries=_PREEMPT_RETRIES)
 def profile_h100(
     models: list[str], batch_sizes: list[int], seq_lens: list[int],
     warmup: int, runs: int, out_basename: str | None = None,
+    mode: str = "prefill",
 ) -> bytes:
     """``H100!`` forces Modal to actually give us H100 (no auto-upgrade to H200)."""
-    return _run_profiling("h100", models, batch_sizes, seq_lens, warmup, runs, out_basename)
+    return _run_profiling("h100", models, batch_sizes, seq_lens, warmup, runs, out_basename, mode)
 
 
 @app.function(gpu="H200", timeout=3600, volumes=_VOLUME_MOUNT, retries=_PREEMPT_RETRIES)
 def profile_h200(
     models: list[str], batch_sizes: list[int], seq_lens: list[int],
     warmup: int, runs: int, out_basename: str | None = None,
+    mode: str = "prefill",
 ) -> bytes:
-    return _run_profiling("h200", models, batch_sizes, seq_lens, warmup, runs, out_basename)
+    return _run_profiling("h200", models, batch_sizes, seq_lens, warmup, runs, out_basename, mode)
 
 
 @app.function(gpu="B200", timeout=3600, volumes=_VOLUME_MOUNT, retries=_PREEMPT_RETRIES)
 def profile_b200(
     models: list[str], batch_sizes: list[int], seq_lens: list[int],
     warmup: int, runs: int, out_basename: str | None = None,
+    mode: str = "prefill",
 ) -> bytes:
-    return _run_profiling("b200", models, batch_sizes, seq_lens, warmup, runs, out_basename)
+    return _run_profiling("b200", models, batch_sizes, seq_lens, warmup, runs, out_basename, mode)
 
 
 # --- Local entrypoint --------------------------------------------------------
@@ -190,10 +203,21 @@ def main(
     seq_lens: str = "64",
     warmup: int = 50,
     runs: int = 100,
+    mode: str = "prefill",
     output: str = "",
 ):
-    """Dispatch a profiling run and write the CSV locally."""
+    """Dispatch a profiling run and write the CSV locally.
+
+    Set ``mode=decode`` to time per-token autoregressive decode instead
+    of prefill. Encoder-only models (BERT) auto-skip in decode mode;
+    enc-dec (T5) is currently TODO and also skips. Default output basename
+    suffixes ``_decode`` when mode=decode so prefill and decode CSVs
+    don't collide.
+    """
     gpu_sku = gpu_sku.lower()
+    if mode not in ("prefill", "decode"):
+        raise SystemExit(f"unknown mode: {mode}. Use 'prefill' or 'decode'.")
+
     model_list = _ALL_MODELS if models == "all" else [m.strip() for m in models.split(",")]
     bs_list = [int(x) for x in batch_sizes.split(",")]
     sl_list = [int(x) for x in seq_lens.split(",")]
@@ -213,15 +237,21 @@ def main(
     fn = dispatchers[gpu_sku]
     # CSV name inside the persistent Volume. Use the local output's basename
     # so multiple runs on the same SKU (e.g. split gpt2-large vs other models)
-    # land in separate files.
-    out_path = Path(output) if output else Path(f"data/raw/{gpu_sku.replace('-', '_')}.csv")
+    # land in separate files. Suffix decode CSVs to avoid colliding with
+    # prefill data on the same GPU.
+    if output:
+        out_path = Path(output)
+    else:
+        suffix = "_decode" if mode == "decode" else ""
+        out_path = Path(f"data/raw/{gpu_sku.replace('-', '_')}{suffix}.csv")
     out_basename = out_path.name
 
-    print(f"dispatching to {gpu_sku}: {len(model_list)} models × {len(bs_list)} batches × {len(sl_list)} seqs")
+    print(f"dispatching to {gpu_sku} (mode={mode}): "
+          f"{len(model_list)} models × {len(bs_list)} batches × {len(sl_list)} seqs")
     print(f"  Modal Volume CSV: /csvs/{out_basename}")
     csv_bytes = fn.remote(
         models=model_list, batch_sizes=bs_list, seq_lens=sl_list,
-        warmup=warmup, runs=runs, out_basename=out_basename,
+        warmup=warmup, runs=runs, out_basename=out_basename, mode=mode,
     )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
