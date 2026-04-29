@@ -121,7 +121,7 @@ def test_few_shot_deterministic_for_same_seed():
     """Need a test pool bigger than n so few-shot doesn't drain it."""
     tr = _build_samples(gpus=("a100",))
     # b200 pool needs > 3 samples so n=3 few-shot leaves a non-empty test set.
-    te_ = _build_samples(gpus=("b200", "h200"))   # 6 samples
+    te_ = _build_samples(gpus=("b200", "l4"))     # 6 samples
     tr_a, te_a = te.apply_few_shot(tr, te_, n=3, seed=42)
     tr_b, te_b = te.apply_few_shot(tr, te_, n=3, seed=42)
     assert [s.config for s in tr_a] == [s.config for s in tr_b]

@@ -13,12 +13,10 @@ def test_each_registry_entry_is_reachable_from_a_device_name():
     ``torch.cuda.get_device_name()`` string."""
     device_names_for_key = {
         "v100": ["Tesla V100-SXM2-32GB", "Tesla V100-PCIE-32GB"],
-        "t4":   ["Tesla T4"],
         "a100": ["NVIDIA A100-SXM4-40GB", "NVIDIA A100 80GB HBM3"],
         "a10":  ["NVIDIA A10", "NVIDIA A10G"],   # A10G is Modal's AWS variant
         "l4":   ["NVIDIA L4"],
         "h100": ["NVIDIA H100 80GB HBM3", "NVIDIA H100-SXM5"],
-        "h200": ["NVIDIA H200", "NVIDIA H200 141GB HBM3e"],
         "b200": ["NVIDIA B200"],
     }
     for key in HARDWARE_REGISTRY:

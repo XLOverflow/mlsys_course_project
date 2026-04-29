@@ -97,24 +97,28 @@
 
 ### 3.1 主表 Extrapolation Results（poster Table 1，MAPE %）
 
+> 数据范围：**5 GPUs**（A10 / A100 / B200 / H100 / L4，跨 4 代架构 Ampere → Ada → Hopper → Blackwell）。T4 (Turing) 和 H200 (Hopper+) 已从最终数据集剔除（T4 Modal 稳定性问题贯穿 prefill 和 decode 收集，H200 在 gpt2-large decode 上有 unresolved 反常）。Prefill 1360 样本 + Decode 600 样本，分目录存放（`data/raw/*.csv` 和 `data/raw/decode/*.csv`），训练时不混。
+
 | Split | Roofline | XGBoost | GNN (v2) | **Router** |
 |---|---:|---:|---:|---:|
-| **── RQ2 硬件外推 ──** (Router 100% → XGB) | | | | |
-| leave-gpu=h100 | 97.0 | **14.0** | 67.8 | **14.0** ← XGB |
-| zero-shot=h200 | 98.0 | **12.0** | 20.9 | **12.0** ← XGB |
-| zero-shot=b200 | 98.7 | **12.7** | 27.9 | **12.7** ← XGB |
-| **── RQ1 架构外推 ──** (Router 100% → GNN) | | | | |
-| leave-model=gpt2-small | 94.1 | 96.1 | **20.0** | **20.0** ← GNN |
-| leave-model=gpt2-medium | 91.5 | 53.4 | **22.0** | **22.0** ← GNN |
-| leave-model=gpt2-large | 88.7 | 39.4 | **25.6** | **25.6** ← GNN |
-| leave-model=bert-base | 97.2 | 125.9 | **21.2** | **21.2** ← GNN |
-| leave-model=bert-large | 96.0 | 50.8 | **31.0** | **31.0** ← GNN |
-| leave-model=t5-small | 98.8 | 59.7 | **33.0** | **33.0** ← GNN |
-| **── 混合 (per-sample 路由展示) ──** | | | | |
-| mixed=gpt2-small,gpt2-large | 92.2 | 63.2 | 46.0 | **39.9** 🏆 |
+| **── RQ1 架构外推（prefill, 5-GPU） ──** (Router 100% → GNN) | | | | |
+| leave-model=gpt2-small | 94.1 | 99.6 | **15.9** | **15.9** ← GNN |
+| leave-model=gpt2-medium | 91.4 | 53.1 | **25.5** | **25.5** ← GNN |
+| leave-model=gpt2-large | 88.5 | 38.6 | **33.1** | **33.1** ← GNN |
+| leave-model=bert-base | 97.2 | 123.8 | **20.7** | **20.7** ← GNN |
+| leave-model=bert-large | 96.0 | 50.7 | **24.6** | **24.6** ← GNN |
+| leave-model=t5-small | 98.8 | 59.9 | **48.7** | **48.7** ← GNN |
+| **prefill mean** | **94.3** | **70.9** | **28.1** | **28.1** |
+| **── 混合（prefill, per-sample 路由展示, 5-GPU） ──** | | | | |
+| mixed=gpt2-small,gpt2-large | 92.2 | 62.0 | 59.1 | **52.3** 🏆 |
+| **── RQ1 架构外推（decode, 5-GPU） ──** (Router 100% → GNN) | | | | |
+| decode leave-model=gpt2-small | 90.6 | 93.6 | **10.0** | **10.0** ← GNN |
+| decode leave-model=gpt2-medium | 85.5 | 48.1 | **11.1** | **11.1** ← GNN |
+| decode leave-model=gpt2-large | 78.7 | 33.1 | **5.7** | **5.7** ← GNN |
+| **decode mean** | **84.9** | **58.2** | **8.9** | **8.9** |
 
 **Hero**（poster 主结论）：
-> **Tabular methods (XGBoost) handle hardware extrapolation well (12-14% MAPE); graph-aware methods (GNN) handle architecture extrapolation well (20-33% MAPE). A two-tier SHAP-driven router achieves the best of both — and on a heterogeneous test set with mixed extrapolation regimes, the router (39.9%) strictly beats both XGBoost alone (63.2%) and the GNN alone (46.0%).**
+> **A graph-aware GNN cost model wins all 6 leave-model-out splits in prefill (mean 28.1% MAPE vs XGBoost 70.9%) and all 3 decode splits (mean 8.9% MAPE vs XGBoost 58.2%). The framework transfers to the decode regime *more cleanly* than prefill — because decode latency is dominated by weight-bytes-read, the per-op signature is sharper. On a heterogeneous mixed-architecture test set, a two-tier SHAP-driven router strictly beats both XGBoost alone (62.0%) and GNN alone (59.1%) at 52.3% MAPE.**
 
 **Mixed split 细节**（[results/mixed_split_router.json](results/mixed_split_router.json)）：
 

@@ -1,6 +1,6 @@
 # Decode-mode profiling summary
 
-Sources: 5 CSV files, 600 rows, 5 GPUs, 3 models.
+Sources: 6 CSV files, 720 rows, 6 GPUs, 3 models.
 
 ## Per-GPU × per-model decode p50 (ms)
 
@@ -19,6 +19,9 @@ NVIDIA B200           gpt2-large      40   6.52    7.04  11.50
 NVIDIA H100 80GB HBM3 gpt2-large      40  15.42   16.31  17.36
                       gpt2-medium     40   9.65   11.00  11.33
                       gpt2-small      40   4.37    5.70   5.84
+NVIDIA H200           gpt2-large      40  23.75   25.30  26.42
+                      gpt2-medium     40   8.05    8.39   8.62
+                      gpt2-small      40   4.17    4.34   4.93
 NVIDIA L4             gpt2-large      40  20.26   21.75  32.60
                       gpt2-medium     40  13.54   14.66  16.02
                       gpt2-small      40   6.95    7.50   7.66
@@ -33,5 +36,6 @@ NVIDIA A10                  17.85        11.65        6.02
 NVIDIA A100-SXM4-40GB       27.32        19.48       10.38
 NVIDIA B200                  7.03         4.55        2.25
 NVIDIA H100 80GB HBM3       15.88        10.67        4.58
+NVIDIA H200                 25.49         8.14        4.93
 NVIDIA L4                   21.52        14.00        7.40
 ```

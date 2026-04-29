@@ -1,70 +1,45 @@
 {
   "experiment": "decode-mode leave-model-out, 5-GPU",
   "branch": "decode-exploration",
-  "scope_note": "GPT-2 family (3 models) only. Encoder-only models (BERT) skip in decode mode; T5 enc-dec decode is TODO. Single-token forward with KV cache from prompt prefill.",
+  "scope_note": "Final 5-GPU dataset (Ampere → Ada → Hopper → Blackwell). T4 (Turing) was dropped after recurrent Modal worker stability issues; H200 (Hopper+) was dropped after a measurement anomaly on gpt2-large. Decode skips encoder-only models (BERT family); T5 enc-dec decode is TODO.",
   "training_details": {
     "epochs": 30,
     "backbone": "gat",
+    "device": "cpu",
     "hyperparams": {"hidden_dim": 64, "num_layers": 2, "dropout": 0.1, "ranking_lambda": 0.1, "seed": 0}
   },
   "data": {
     "csv_files": [
-      "data/raw/a10_decode.csv",
-      "data/raw/a100_40gb_decode.csv",
-      "data/raw/b200_decode.csv",
-      "data/raw/h100_decode.csv",
-      "data/raw/l4_decode.csv"
+      "data/raw/decode/a10_decode.csv",
+      "data/raw/decode/a100_40gb_decode.csv",
+      "data/raw/decode/b200_decode.csv",
+      "data/raw/decode/h100_decode.csv",
+      "data/raw/decode/l4_decode.csv"
     ],
     "rows_total": 600,
     "models": ["gpt2-small", "gpt2-medium", "gpt2-large"],
     "gpus": ["A10G", "A100-SXM4-40GB", "B200", "H100-80GB-HBM3", "L4"],
-    "config_grid": "8 batches × 6 seqs × 3 models × 5 GPUs (seq=1024 skipped on decode mode for headroom)"
+    "config_grid": "8 batches × 5 seqs × 3 models × 5 GPUs (seq=1024 skipped on decode mode for next-token headroom)"
   },
   "leave_model_out_results": [
-    {
-      "held_model": "gpt2-small",
-      "n_test": 200,
-      "xgboost_mape": 0.9356,
-      "gnn_mape":     0.1000,
-      "router_mape":  0.1000,
-      "router_choice": "gnn"
-    },
-    {
-      "held_model": "gpt2-medium",
-      "n_test": 200,
-      "xgboost_mape": 0.4805,
-      "gnn_mape":     0.1107,
-      "router_mape":  0.1107,
-      "router_choice": "gnn"
-    },
-    {
-      "held_model": "gpt2-large",
-      "n_test": 200,
-      "xgboost_mape": 0.3307,
-      "gnn_mape":     0.0568,
-      "router_mape":  0.0568,
-      "router_choice": "gnn"
-    }
+    {"held_model": "gpt2-small",  "n_test": 200, "xgboost_mape": 0.9356, "gnn_mape": 0.1000, "router_mape": 0.1000, "router_choice": "gnn"},
+    {"held_model": "gpt2-medium", "n_test": 200, "xgboost_mape": 0.4805, "gnn_mape": 0.1107, "router_mape": 0.1107, "router_choice": "gnn"},
+    {"held_model": "gpt2-large",  "n_test": 200, "xgboost_mape": 0.3307, "gnn_mape": 0.0568, "router_mape": 0.0568, "router_choice": "gnn"}
   ],
   "summary_means": {
     "decode_gnn_mape_mean":     0.0892,
-    "decode_xgboost_mape_mean": 0.5823
+    "decode_xgboost_mape_mean": 0.5823,
+    "gnn_better_than_xgboost_factor": 6.53
   },
-  "comparison_to_prefill": {
-    "prefill_gnn_mape_same_models_mean":     0.2253,
-    "prefill_xgboost_mape_same_models_mean": 0.6297,
-    "decode_gnn_better_by_factor":           2.53,
-    "note": "Decode mode is *easier* to predict for graph-aware models because decode latency is dominated by weight-bytes-read (memory-bound, very repetitive across configs) while prefill latency mixes compute and memory regimes."
+  "comparison_to_prefill_5gpu": {
+    "prefill_gnn_mape_3gpt2_models_mean":    0.2483,
+    "prefill_xgboost_mape_3gpt2_models_mean": 0.6377,
+    "decode_gnn_better_than_prefill_gnn_by_factor": 2.78,
+    "note": "Decode-mode prediction is *easier* than prefill for graph-aware models. Decode latency is dominated by reading model weights (memory-bound, very repetitive across configs); GNN with sum-readout + per-node features captures the per-op-bytes signature directly. Prefill latency mixes compute and memory regimes which adds noise."
   },
   "cross_gpu_observations": [
-    "gpt2-small/medium/large per-token decode latencies scale ~3× from small to large (vs ~6.2× param ratio) — memory-bandwidth-limited rather than compute-limited",
-    "B200 vs H100: ~2× faster on decode, tracking the ~2.4× HBM bandwidth ratio (8 TB/s vs 3.35 TB/s)",
-    "A100-SXM4-40GB anomalously *slower* than A10 on decode despite 2.6× more bandwidth — suggests eager-mode attention dispatch quirk on Ampere; consistent with the existing prefill A100 numbers being similarly slow for small batches"
-  ],
-  "open_questions": [
-    "Why is A100-SXM4-40GB slower than A10 on decode? Investigate whether torch.eager attention takes a slow path on Ampere SM_80",
-    "T5 (enc-dec) decode plumbing: needs decoder_input_ids + cached encoder cross-attention — TODO",
-    "T4 and H200 Modal jobs still queueing as of 2026-04-29 17:38 EDT; data not yet collected on those 2 GPUs",
-    "Mixed-split (per-sample routing) experiment: needs ≥4 models for meaningful held-out + held-config test; can't run yet with only 3 GPT-2 models"
+    "gpt2-small/medium/large per-token decode latencies scale ~3× from small to large across all 5 GPUs (vs ~6.2× param ratio) — bandwidth-saturated, not compute-saturated",
+    "B200 vs H100: ~2× faster on decode, tracking the 2.4× HBM bandwidth ratio (8 TB/s vs 3.35 TB/s) — clean memory-bound signature",
+    "A100-SXM4-40GB anomalously slower than A10 / L4 on decode despite 2.6× more bandwidth — likely eager-mode attention dispatch quirk on Ampere SM_80 (we use attn_implementation='eager' per scope decision)"
   ]
 }

@@ -53,7 +53,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--batch", type=int, required=True, help="Batch size")
     p.add_argument("--seq", type=int, required=True, help="Sequence length")
     p.add_argument("--gpu", required=True,
-                   help="GPU registry key (t4, a10, a100, l4, h100, h200, b200)")
+                   help="GPU registry key (a10, a100, b200, h100, l4)")
     p.add_argument("--regime", choices=["leave-out", "in-distribution"], default="leave-out",
                    help="leave-out: train on other 5 models (router picks GNN). "
                         "in-distribution: train on all 6 (router picks XGBoost).")

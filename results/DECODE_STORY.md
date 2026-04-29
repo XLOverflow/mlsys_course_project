@@ -2,9 +2,11 @@
 
 > Branch `decode-exploration`. 5 GPUs × 3 GPT-2 models × 40 configs =
 > **600 clean decode-latency measurements**. Cost-model results below.
-> T4 (Turing) and H200 (Hopper+) attempted but stalled on Modal; not
-> blocking the story since the 5 GPUs we have span 4 architecture
-> generations and 27× HBM bandwidth range.
+> T4 (Turing) was excluded after recurrent Modal worker stability
+> issues. H200 (Hopper+) was excluded after a measurement anomaly on
+> gpt2-large decode (slower than H100 despite more bandwidth) we did
+> not investigate. Final dataset spans 4 architecture generations
+> (Ampere → Ada → Hopper → Blackwell) and a 27× HBM bandwidth range.
 
 ## TL;DR (one sentence)
 

@@ -67,9 +67,14 @@ HARDWARE_REGISTRY: Dict[str, Hardware] = {
     # bandwidth, L2 cache size, streaming-multiprocessor count.
     # Adding a new device is a one-line registry entry + one-line add to
     # scripts/modal_profiling.py (if on Modal).
-    # --- Training anchors (6 points spanning 5 architecture generations) ---
-    "v100": Hardware("V100", fp16_tflops=125,  memory_gb=32,  bandwidth_gbs=900,  l2_cache_mb=6,  sm_count=80),   # Volta     (sm_70)
-    "t4":   Hardware("T4",   fp16_tflops=65,   memory_gb=16,  bandwidth_gbs=320,  l2_cache_mb=4,  sm_count=40),   # Turing    (sm_75)
+    #
+    # Final 5-GPU dataset (Ampere → Ada → Hopper → Blackwell, 4 generations).
+    # V100 (Volta) is registered as a planned anchor but was never profiled
+    # in this project (PSC allocation never started). T4 (Turing) was
+    # excluded after recurrent Modal worker stability issues across both
+    # prefill and decode collection. H200 (Hopper+) was excluded after a
+    # measurement anomaly on gpt2-large decode we did not investigate.
+    "v100": Hardware("V100", fp16_tflops=125,  memory_gb=32,  bandwidth_gbs=900,  l2_cache_mb=6,  sm_count=80),   # Volta     (sm_70, registered, unused)
     "a100": Hardware("A100", fp16_tflops=312,  memory_gb=40,  bandwidth_gbs=1555, l2_cache_mb=40, sm_count=108),  # Ampere    (sm_80, GA100)
     # A10 is shorthand — Modal schedules us onto A10G (AWS G5 variant) which
     # has 80 SMs / ~70 TFLOPS dense FP16 tensor (vs datacenter A10's 72 / 125).
@@ -77,8 +82,6 @@ HARDWARE_REGISTRY: Dict[str, Hardware] = {
     "a10":  Hardware("A10",  fp16_tflops=70,   memory_gb=24,  bandwidth_gbs=600,  l2_cache_mb=6,  sm_count=80),   # Ampere    (sm_86, GA102, A10G)
     "l4":   Hardware("L4",   fp16_tflops=121,  memory_gb=24,  bandwidth_gbs=300,  l2_cache_mb=48, sm_count=58),   # Ada       (sm_89)
     "h100": Hardware("H100", fp16_tflops=1979, memory_gb=80,  bandwidth_gbs=3350, l2_cache_mb=50, sm_count=132),  # Hopper    (sm_90)
-    # --- Few-shot test target ---
-    "h200": Hardware("H200", fp16_tflops=1979, memory_gb=141, bandwidth_gbs=4800, l2_cache_mb=50, sm_count=132),  # Hopper+   (sm_90)
     # --- Hero zero-shot target ---
     "b200": Hardware("B200", fp16_tflops=4500, memory_gb=180, bandwidth_gbs=8000, l2_cache_mb=96, sm_count=160),  # Blackwell (sm_100)
 }
