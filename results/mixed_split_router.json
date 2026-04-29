@@ -1,0 +1,59 @@
+{
+  "split": "mixed=gpt2-small,gpt2-large",
+  "epochs": 30,
+  "backbone": "gat",
+  "hyperparams": {
+    "hidden_dim": 64,
+    "num_layers": 2,
+    "dropout": 0.1,
+    "ranking_lambda": 0.1,
+    "seed": 0
+  },
+  "fold_sizes": {
+    "train": 987,
+    "test": 916,
+    "test_unseen_architecture": 671,
+    "test_held_config_in_distribution": 245
+  },
+  "training_models": ["bert-base", "bert-large", "gpt2-medium", "t5-small"],
+  "held_out_models": ["gpt2-small", "gpt2-large"],
+  "config_holdout_pct": 0.2,
+  "metrics": [
+    {"method": "Roofline",       "mape": 0.9223, "spearman": 0.719, "top1": 0.000},
+    {"method": "Per-graph mean", "mape": 1.6157, "spearman": 0.502, "top1": 0.000},
+    {"method": "Pooled MLP",     "mape": 0.6991, "spearman": 0.744, "top1": 0.000},
+    {"method": "XGBoost",        "mape": 0.6324, "spearman": 0.779, "top1": 0.000},
+    {"method": "Per-kernel MLP", "mape": 8.4262, "spearman": 0.472, "top1": 0.000},
+    {"method": "GNN (gat)",      "mape": 0.4601, "spearman": 0.937, "top1": 0.000},
+    {"method": "Router",         "mape": 0.3985, "spearman": 0.935, "top1": 0.000}
+  ],
+  "router_tier_breakdown": {
+    "tier1_architecture_identity": {"count": 671, "pct": 73.3, "decision": "gnn"},
+    "tier2_feature_ood":           {"count":   0, "pct":  0.0, "decision": "gnn"},
+    "default_in_distribution":     {"count": 245, "pct": 26.7, "decision": "xgboost"}
+  },
+  "per_tier_mape": {
+    "tier1_architecture_identity": {
+      "n": 671,
+      "xgboost_mape": 0.8242,
+      "gnn_mape":     0.5050,
+      "router_uses": "gnn",
+      "router_choice_correct": true,
+      "gap_pts": 31.92
+    },
+    "default_in_distribution": {
+      "n": 245,
+      "xgboost_mape": 0.1070,
+      "gnn_mape":     0.3371,
+      "router_uses": "xgboost",
+      "router_choice_correct": true,
+      "gap_pts": 23.01
+    }
+  },
+  "key_findings": [
+    "Router (39.85%) beats both XGBoost (63.24%) and GNN alone (46.01%) — per-sample routing is strictly better than either single model",
+    "Per-tier validation: on Tier 1 (671 unseen-arch samples) GNN 50.5% beats XGBoost 82.4% by 32 pts → Router correctly picks GNN. On Default (245 in-dist samples) XGBoost 10.7% beats GNN 33.7% by 23 pts → Router correctly picks XGBoost. Router's choice is optimal on every tier.",
+    "Tier 2 (SHAP-driven feature OOD) fires 0% in this dataset because graph aggregate features are graph-level constants; included as defense-in-depth for production deployments where fine-tuned variants might drift",
+    "Router contribution: by picking XGBoost on the 26.7% in-distribution subset where GNN underperforms by 23 pts, Router shaves 6.3 MAPE points off GNN-alone performance (46.01 - 39.85 ≈ 23 × 0.267)"
+  ]
+}
