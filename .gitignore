@@ -102,6 +102,7 @@ outputs/
 # Re-include data/ subdirs after the broad per-extension excludes above.
 # (git evaluates rules top-to-bottom; later rules override earlier ones.)
 !data/raw/*.csv
+!data/raw/**/*.csv          # decode-mode CSVs live in data/raw/decode/
 !data/graphs/*.pkl
 
 # Misc
