@@ -1,680 +1,372 @@
-# 跨异构 GPU 的 LLM 推理延迟泛化代价模型
+# 跨异构 GPU 的 LLM 推理延迟泛化代价模型 — 项目计划
 
-## 两周冲刺执行计划
-
-**团队成员**：Xiang Li (xli8) | Xinhao Tan (xinhaota) | Zhikai Hu (zhikaih)
-
-**时间跨度**：2026年4月14日 – 4月28日
-
-**硬件资源**：V100 (PSC) | A100-40GB (Modal) | H100 (PSC) | H200 (Modal) | B200 (Modal)
+**团队**：Xiang Li (xli8) | Xinhao Tan (xinhaota) | Zhikai Hu (zhikaih)
+**周期**：2026-04-14 ~ 2026-04-30（poster 截止）
+**硬件**：T4 / A10 / A100-40GB / L4 / H100 / H200 / B200（全部 Modal）
 
 ---
 
-## 0. 进度仪表板（2026-04-18 更新）
+## 0. 当前状态（2026-04-29，poster 截止前 1 天）
 
 | 阶段 | 状态 | 备注 |
 |---|---|---|
-| Day 1-2 基础设施 | ✅ 完成 (2026-04-17) | 三人交付 6/6；pytest 22/22、smoke 6/6、end-to-end 8/8 全绿 |
-| Day 3-4 数据收集 | ✅ 完成 (2026-04-17) | 7 GPU × 6 模型 = **1903 有效样本**（超额于计划 1500+）；V100 未启动但非 blocker |
-| Day 5-7 Table 1 主结果 | ✅ 完成 (2026-04-17/18) | **Phase 5 + 6**：6/6 leave-model-out 全部完成，GNN 在所有 split 胜 XGBoost **13.7–104.7 MAPE 点** |
-| Day 8-9 硬件泛化 (Table 2) | ✅ 完成 (2026-04-17/18) | **Phase 6 P4**：B200 zero-shot **27.9%**、H200 zero-shot **20.9%**、B200 fs200 **9.7%** |
-| Day 10-11 消融 (Table 3) | ✅ 完成 (2026-04-17/18) | **Phase 6 P1 + P2**：v2 三开关 ablation + leave-gpu=h100 退步诊断 |
-| Day 12-14 报告撰写 | 🟢 可以开始 | 三张表数字齐备，详见 [results/EXPERIMENTS.md](results/EXPERIMENTS.md) |
+| Day 1-2 基础设施 | ✅ 完成 | pytest 22/22、smoke 6/6、end-to-end 8/8 |
+| Day 3-4 数据收集 | ✅ 完成 | 7 GPU × 6 模型 = **1903 样本**（超额） |
+| Day 5-7 Table 1（架构外推） | ✅ 完成 | 6/6 leave-model-out，GNN 胜 XGBoost 13.7-104.7 MAPE 点 |
+| Day 8-9 Table 2（硬件外推） | ✅ 完成 | B200 zero-shot 27.9% 达标，但 XGBoost 在硬件外推上更强 |
+| Day 10-11 Table 3（消融） | ✅ 完成 | v2 三开关协同；leave-gpu trade-off 诊断 |
+| **Day 14-15 Poster 冲刺** | 🔴 **进行中** | Router + SHAP + Demo + 文案重写 |
 
 **Claim 状态**：
-- ✅ **C1**（learned > baselines）：6/6 leave-model-out 全部成立
-- ⚠️ **C2**（spec-only zero-shot to Blackwell）：**B200 MAPE 27.9% < 30% 阈值达标**，但 XGBoost 在 zero-shot 硬件 split 上反而更强（12.7%）→ 需重排叙事（详见 §10 风险）
-- ✅ **C3**（graph structure has marginal contribution）：Per-kernel MLP 在 6/6 leave-model split 上 44-1093% MAPE 爆炸，GNN 稳定在 20-33%
 
-**详细数字**：全部在 [results/EXPERIMENTS.md](results/EXPERIMENTS.md) Phase 6（Chinese comprehensive）。
+- ✅ **C1**（学习模型 > baselines）：6/6 leave-model-out 全部成立
+- ⚠️ **C2**（spec-only zero-shot to Blackwell）：B200 27.9% 达标，但 XGBoost 在 zero-shot 硬件 split 上更强 → 重排为 trade-off 叙事
+- ✅ **C3**（graph 结构 load-bearing）：Per-kernel MLP 在 6/6 leave-model split 上 44-1093% 不稳定，GNN 稳定 20-33%
 
----
-
-## 1. 总体策略
-
-原计划为4周，现压缩至2周。核心目标不变：构建一个图级别(graph-level)的学习代价模型 **f(G, s, h) → T̂**，给定模型计算图 G、推理配置 s（batch size、seq len）、目标 GPU 硬件向量 h，预测端到端推理延迟，并在不同工作负载和未见过的 GPU 上展示泛化能力。
-
-**项目性质定位**：CMU 15-442 MLSys 课程期末 project，不是论文投稿。架构和实现可以借鉴已有工作（NeuSight、Akhauri 2024、HELP 等），重点在方法自洽、数据干净、有一小块自己的差异化贡献（连续硬件规格向量 + LLM 图 + 跨代外推到 Blackwell 的组合）。详细评审见 [research_review.md](research_review.md)。
-
-**相对 proposal 的 scope 4 项决策**（2026-04-17 团队对齐，报告 Intro 必须显式声明）：
-
-1. **异构目标**：原 proposal 是 CPU/GPU operator placement；本项目收窄为 **纯 GPU cross-generation**（V100→A100→H100→H200→B200）。`s` 从 operator placement 改为 (batch_size, seq_len) inference config
-2. **延迟含义**：测量 **end-to-end latency of a single forward pass over the full computation graph**（= prefill stage）。Autoregressive decode 不测，列入 Limitations / Future Work
-3. **工作负载**：**Transformer 家族**（GPT-2 / BERT / T5）。ResNet 虽在 proposal 中提到，本项目不做
-4. **torch.compile**：遵循 proposal §4 声明 "we do not compare with torch.compile() version"，**全部用 HF eager mode + `attn_implementation="eager"`**。Limitations 段声明：测量范围限于 HF eager-mode latency；vLLM / TensorRT-LLM 等 serving 栈不在 scope 内
-
-**关键调整思路**：
-
-- 三人全程并行，分别负责数据管线、模型训练、实验评估三条主线
-- GPU 排队时间宝贵，所有 profiling 脚本必须在本地完全调试通过后再提交
-- 将 profiling 任务设计为"一次排队、批量收集"模式，一次 GPU 预约覆盖一个模型族的所有配置
-- 报告写作从第10天就开始，不留到最后
+**详细结果**：[results/EXPERIMENTS.md](results/EXPERIMENTS.md)（Phase 6，16 轮 sweep）
 
 ---
 
-## 2. 当前研究现状（关键参考文献）
+## 1. 项目定位与 Scope 决策
 
-以下最新工作直接影响我们的技术方案设计和贡献定位：
+**核心目标**：构建图级别的学习代价模型 **f(G, s, h) → T̂**，给定模型计算图 G、推理配置 s（batch、seq）、目标 GPU 硬件向量 h，预测端到端 forward-pass latency，**展示跨工作负载和跨硬件的外推能力**。
 
-### 2.1 CALO-GNN (KDD 2025 Workshop)
+**项目性质**：CMU 15-442 MLSys 课程期末 project，poster 终点（不是论文投稿）。架构借鉴 NeuSight (ASPLOS'25)、Akhauri 2024、HELP；差异化贡献在**架构外推（leave-model-out）的稳定性**。
 
-- **核心思路**：首个基于图神经网络的 TVM 代价模型，提供校准的认识不确定性估计（evidential GNN）；采用两阶段迁移方法，利用400万历史调度记录，仅需2000次测量即可适配新设备
-- **关键指标**：跨设备自动调优时间减少30%以上
-- **与我们的区别**：CALO-GNN 在算子(kernel)级别运行，为 TVM MetaSchedule 的调度搜索服务。我们在计算图(graph)级别操作，预测端到端延迟，并将硬件建模为连续特征向量
+### 1.1 相对 proposal 的 4 项 scope 决策（Intro 必须显式声明）
 
-### 2.2 Felix (ASPLOS 2024)
-
-- **核心思路**：基于梯度下降的张量程序优化框架，构建可微分的延迟预测函数，替代传统的组合搜索
-- **关键指标**：达到90%峰值性能的搜索时间比 Ansor 快5.8倍
-- **与我们的区别**：Felix 聚焦于单设备上的 schedule 调优。我们关注跨 GPU 硬件的端到端延迟预测，是更高层次的硬件选择和配置决策问题
-
-### 2.3 Helix (ASPLOS 2025)
-
-- **核心思路**：将异构 GPU 集群上的 LLM 推理建模为最大流问题，使用混合整数线性规划(MILP)联合优化模型放置和请求调度
-- **关键指标**：吞吐提升最高3.3倍，prompt延迟降低最高66%
-- **与我们的区别**：Helix 使用分析/MILP方法，我们使用学习模型来预测代价，能泛化到未见过的硬件
-
-### 2.4 Q-Infer (ACM TACO 2025)
-
-- **核心思路**：混合 GPU-CPU 异构并行推理，结合稀疏性感知的自适应动态调度
-- **与我们的区别**：Q-Infer 针对 CPU+GPU 混合执行设计手工调度规则；我们聚焦于跨 GPU 硬件代际的端到端延迟泛化预测，问题设定不同
-
-### 2.5 Ansor / MetaSchedule (OSDI'20 / NeurIPS'22)
-
-- **地位**：TVM 中学习代价模型的基础工作，算子级别的代价模型驱动调度搜索
-- **与我们的区别**：逐算子、逐任务在线学习；我们追求跨工作负载和跨硬件的图级别泛化
-
----
-
-## 3. 硬件资源与特征向量设计
-
-五种 GPU 横跨四代架构（Volta → Ampere → Hopper → Blackwell），构成训练集（3个）和泛化测试集（2个）：
-
-**6 个 training anchor + 2 个 test target**（全部 Modal 覆盖；PSC 可作冗余备份）：
-
-| 特征 | V100 | T4 | A100-40GB | A10 | L4 | H100 | H200 | B200 |
-|------|------|------|-------|------|------|------|------|------|
-| **角色** | 训练 | 训练 | 训练 | 训练 | 训练 | 训练 | few-shot 测试 | **hero zero-shot** + few-shot 对照 |
-| **架构 (sm)** | Volta (70) | Turing (75) | Ampere (80) | Ampere (86) | Ada (89) | Hopper (90) | Hopper+ (90) | Blackwell (100) |
-| FP16 TFLOPS | 125 | 65 | 312 | 125 | 121 | 1,979 | 1,979 | ~4,500 |
-| HBM / 内存 | 32 GB | 16 GB | 40 GB | 24 GB | 24 GB | 80 GB | 141 GB | 180 GB |
-| 显存带宽 | 900 | 320 | 1,555 | 600 | 300 | 3,350 | 4,800 | 8,000 GB/s |
-| L2 cache | 6 MB | 4 MB | 40 MB | 6 MB | 48 MB | 50 MB | 50 MB | 96 MB |
-| SM 数量 | 80 | 40 | 108 | 72 | 58 | 132 | 132 | 160 |
-| **Modal SKU lock** | — | `T4` | `A100-40GB` | `A10` | `L4` | `H100!` | `H200` | `B200` |
-
-**为什么 6 个 training anchor**：原计划只有 3 个（V100 / A100 / H100），5 维连续硬件向量在 3 个点上欠定（3 个点定义不了 5D 函数）。加到 6 个后覆盖 **5 个架构代际**（Volta, Turing, Ampere, Ada, Hopper），且 Ampere 内部有 2 个点（A100 sm_80 + A10 sm_86），测试"同 arch 不同 spec"的学习能力。论文里的"spec-only zero-shot 外推到 Blackwell"claim 站得住的前提。
-
-**硬件特征向量 h（5 维）**：峰值 FP16 TFLOPS、HBM 容量、HBM 带宽、**L2 cache size**、SM 数量。所有数值做归一化处理（除以各维理论上限），使模型能通过连续物理特征感知硬件差异。**全部为片上 spec**，没有互联带宽、没有代际 ordinal——跟 NeuSight (ASPLOS'25) 的 on-chip-only 惯例一致。
-
-**为什么用 L2 cache 而不是 PCIe/NVLink 带宽**：PCIe / NVLink 这类互联带宽在单 GPU 的 forward-pass 测量窗口内不会被使用（输入和权重早在 GPU 上），作为预测特征是 confound；L2 cache 是片上特征，影响带宽放大和小 kernel 延迟，是真实有物理信号的维度。
-
-**为什么不加"架构代际" ordinal**：初版曾包含 `arch_gen` ∈ {0.00, 0.33, 0.67, 1.00} 四档，但 arch_gen 本质是"披着连续向量外衣的离散 device-ID"——MLP 可以把它当成 lookup 直接查表（H200 的 arch_gen 和 H100 完全一样，所以泛化被"白送"；B200 的 1.00 在训练从未出现，MLP 外推不受约束）。移除后模型只能依赖真实物理量（TFLOPS / 带宽 / L2 / SM 数），spec-only 零样本泛化的 claim 干净许多。即使 B200 外推效果不理想，这也是**有价值的 negative finding**（说明需要更多代际区分物理量），比伪装的 ordinal 诚实。
-
-H200 与 H100 同架构但规格不同（HBM 容量 80→141、带宽 3350→4800；fp16_tflops/L2/SM 完全相同），是"同族内插值"泛化；B200 是全新架构，是"跨架构外推"泛化——两种难度的泛化测试使实验更有层次。
-
----
-
-## 4. 技术方案（适配两周周期）
-
-### 4.1 计算图表示
-
-通过 ONNX 或 `torch.fx` 导出模型计算图，将每个算子节点转化为特征向量：
-
-- 算子类型（one-hot 编码：Conv, MatMul, LayerNorm, Attention, ...）
-- 输入/输出张量形状
-- 估算 FLOPs
-- 估算内存占用
-- 数据类型
-
-边表示数据依赖关系，整体构成一个有向无环图(DAG)，可直接输入 GNN。
-
-### 4.2 推理配置编码
-
-推理配置 s 定义为一次推理的服务参数，与模型结构无关：
-
-- **batch size**：请求批大小（1 / 4 / 8 / 16）
-- **sequence length**：输入序列长度（64 / 128 / 256）
-
-s 编码为归一化的 2 维全局向量，在图级别 readout 之后拼接到 MLP head 的输入，而不广播到每个节点。这样节点特征只编码算子结构信息，s 和 h 在全局层面影响延迟预测，反映它们的物理意义。
-
-**排序意义**：对同一模型 G，不同 (s, h) 组合的延迟排序即为"在哪块 GPU 上、用什么 batch 跑最快"的决策依据。
-
-### 4.3 代价模型架构
-
-我们采用 **GNN 为主架构、Graph Transformer 为对比变体** 的方案。
-
-#### 主架构：GAT（Graph Attention Network）
-
-```
-输入: 标注计算图 G (节点特征 + 边)  +  配置 s=(bs,sl)  +  硬件向量 h
-  │
-  ├── 节点嵌入: 算子特征（op_type, shapes, FLOPs, memory）
-  │
-  ├── 3层 GAT, hidden_dim=128, 4 heads
-  │
-  ├── 图级别 Readout: mean pooling + max pooling 拼接 → 256维
-  │
-  ├── 拼接全局特征: [图表示 | s(2维) | h(5维)] → 263维
-  │
-  ├── 2层 MLP Head (263 → 128 → 1)
-  │
-  └── 输出: 预测延迟 T̂
-```
-
-**选择 GNN 的理由**：
-
-- 计算图是天然的 DAG 结构，GNN 的消息传递沿数据依赖边进行，归纳偏置最匹配
-- 不同模型的图拓扑差异极大（GPT-2 decoder-only vs BERT encoder-only vs T5 encoder-decoder），GNN 天然处理变长、不规则结构，无需 padding
-- 数据量有限（~1500 条），GNN 的图结构先验更强，小样本下更不容易过拟合
-- CALO-GNN 等最新工作已验证 GNN 在代价模型任务上的有效性
-
-#### 对比变体：Graph Transformer
-
-```
-输入: 同上
-  │
-  ├── 节点嵌入 + Laplacian 位置编码（编码图拓扑结构）
-  │
-  ├── 3层 Transformer Encoder (d_model=128, 4 heads, 带图结构偏置)
-  │
-  ├── [CLS] token 或 mean pooling 做图级别表示
-  │
-  ├── 2层 MLP Head
-  │
-  └── 输出: 预测延迟 T̂
-```
-
-**Graph Transformer 的潜在优势**：全局自注意力可一步捕获长距离算子依赖（GNN 需要多层堆叠，存在过度平滑风险）。我们将其作为消融实验的一个变体，对比 GNN 和 Graph Transformer 在预测精度、训练效率和泛化能力上的差异。如果数据量不足以支撑 Transformer 的参数量，可通过减小 d_model 或层数来控制。
-
-**损失函数**：MSE Loss + λ × Pairwise Ranking Loss（确保策略排序正确性）
-
-**实现框架**：PyTorch Geometric (PyG)，Graph Transformer 可基于 PyG 的 `TransformerConv` 或独立实现
-
-### 4.4 训练策略
-
-- **Phase 1**：在 V100 + T4 + A100 + A10 + L4 + H100 数据上训练，学习跨 GPU 代际的预测能力
-- **Phase 2**：在 H200 上做 **few-shot** 评估（50/100/200 samples，同架构不同规格，测试插值泛化）；在 B200 上做 **hero zero-shot** 评估（全新架构，测试外推泛化）；然后用少量 B200 样本做 few-shot 微调，测量改善幅度
-  > H200 改用 few-shot 而非 zero-shot 的原因：H200 在 h 向量中与 H100 只有 `memory_gb` 和 `bandwidth_gbs` 不同，compute-bound 区延迟本就 ≈ H100，zero-shot 时几乎是白送（即使现在有 6 个 training anchor，H200 仍和 H100 的 3 维 h 完全相同，同族插值缺乏挑战性）
-
----
-
-## 5. Baseline 设计
-
-本项目涉及两类 baseline 对比：**推理性能 baseline**（代价模型选出的策略要跟谁比延迟）和**代价模型 baseline**（GNN 预测器要跟什么预测方法比精度）。
-
-项目的核心贡献在于代价模型的**预测精度**和**泛化能力**，因此 baseline 聚焦在代价模型层面。选择 baseline 时要避免 straw-man（例如只放一个弱公式），至少要有一个有竞争力的非图学习方法作为主对比。
-
-| Baseline | 做法 | 实现位置 | 对比意义 | 状态 |
-| --- | --- | --- | --- | --- |
-| **Roofline 分析模型** | 延迟 = Σᵢ max(FLOPsᵢ / 峰值TFLOPS, bytesᵢ / 带宽) | [baselines.py:roofline_latency](src/hetero_cost_model/baselines.py) | 次要参考，证明"学习模型胜过手写公式"；`memory_bytes` 已按 FP16 修正（2 bytes/element） | ✅ |
-| **Per-graph mean + learned GPU offset** | ŷ(m, g) = graph_mean[m] + gpu_offset[g]；不访问图结构 / op 特征 / (bs, sl) | [baselines.py:PerGraphMeanBaseline](src/hetero_cost_model/baselines.py) | **数据泄漏诊断**。GNN 必须显著优于它，否则 message passing 和硬件特征都是装饰 | ✅ |
-| **XGBoost on global features** | 12 维手工特征（log1p(total_flops)、log1p(total_bytes)、num_nodes、num_edges、batch、seq_len、5 维 h）→ GBDT | [baselines.py:XGBoostBaseline](src/hetero_cost_model/baselines.py) | **强 baseline**。文献里通常 10-15% MAPE，GNN 需要至少 3-5 MAPE 点击败 | ✅ |
-
-**统一驱动脚本**：`python scripts/train_and_eval.py --csv <csv> --split <spec>` 一次性跑 Roofline / Per-graph mean / XGBoost / GNN，输出 MAPE / Spearman ρ / Top-1 并列表。`--split` 支持 `random` / `leave-gpu=<key>` / `leave-model=<name>` / `zero-shot=<key>`。
-
-### 5.2 研究 claim 与实验表的映射
-
-论文要 defend 三条 claim，每条 claim 对应**唯一一张表**，避免实验发散：
-
-| # | Claim | 支撑表 | 如果失败的 negative finding |
+| # | Proposal 写的 | 实际做的 | 写入 §Limitations |
 |---|---|---|---|
-| **C1** | 学习型代价模型在已见硬件上优于分析式和朴素基线 | Table 1 | "Roofline + 手工特征就够了" |
-| **C2** | 连续硬件规格向量 + GNN 能从 V100/A100/H100 零样本外推到 Blackwell | Table 2 | "spec-only zero-shot 在跨代架构上失效" |
-| **C3** | 图结构（message passing）对 prefill 延迟预测有边际贡献 | Table 3 | "per-op 特征就够，图结构是装饰" |
+| 1 | CPU/GPU operator placement | **纯 GPU cross-generation**；s = (batch, seq) inference config | ✅ 必须 |
+| 2 | end-to-end latency | **forward-pass / prefill 单次延迟**；autoregressive decode 不测 | ✅ 必须 |
+| 3 | Transformer + ResNet | **仅 Transformer 家族**（GPT-2 / BERT / T5 共 6 个） | ✅ 必须 |
+| 4 | torch.compile? | 全部 HF eager mode + `attn_implementation="eager"` | ✅ 必须（proposal §4 已声明） |
 
-**原则**：每个数字都必须直接回答某个 claim 的 "yes / no"；不产出"看起来有趣但不支撑 claim"的数字。
+### 1.2 Proposal 三个 RQ 的覆盖
 
-#### Table 1 — 预测精度（主结果，支撑 C1）
+| RQ | 对应实验 split | 实验数 | 谁赢 | 状态 |
+|---|---|---:|---|---|
+| **RQ1 Workload 泛化**（架构外推） | `leave-model=*` | 6 | **GNN 全胜** | ✅ 主 hero |
+| **RQ2 Hardware 泛化**（硬件外推） | `leave-gpu=h100` + `zero-shot=b200` + `zero-shot=h200` | 3 | **XGBoost 全胜** | ⚠️ trade-off 叙事 |
+| **RQ3 Decision effectiveness** | （新增）Router demo | 1 | n/a | 🔴 sprint 中操作化 |
 
-5 method × 5 split = 25 格。每格报 MAPE / Spearman ρ / Top-1 三个指标。
+---
 
-**实际数字（2026-04-18 填充，MAPE %；详见 [results/EXPERIMENTS.md](results/EXPERIMENTS.md) §6.2）**：
+## 2. 技术方案（已实现，~~此处压缩历史~~）
 
-| Method \ Split | Random 80/20 | Leave-gpu-out (H100) | Leave-model-out avg 6 folds |
-|---|:---:|:---:|:---:|
-| Roofline | ~95 | 97.0 | 94.4 (94.1–98.8) |
-| Per-graph mean | ~55 | 439.8 | 221.3 (54.6–472.4) |
-| Graph-level pooled MLP | — | 50.5 | 70.4 (37.7–156.6) |
-| XGBoost | **8.8** | **14.0** | 70.9 (39.4–125.9) |
-| Per-kernel MLP | — | 558.9 | 452.5 (44.1–1093.5) |
-| **GNN (GAT)** | 34.7 | 67.8 | **25.5 (20.0–33.0)** 🏆 |
+### 2.1 硬件特征向量（5 维）
 
-**解读**：
-- GNN 在 **leave-model-out（6/6 模型）上完胜 XGBoost 13.7–104.7 MAPE 点** → C1 主结论成立
-- Random 和 Leave-gpu-out 上 XGBoost 仍更强（分布内 / 同图不同硬件）→ 这两个 split 不是 GNN 的主场，诚实报告
-- Per-kernel MLP 数值极不稳定（44%–1093%）→ 边 + message passing 对稳定性必需（C3 成立）
-
-**原始格子（保留作参考）**：
-
-| Method \ Split | Random 80/20 | Leave-one-GPU-out (V100) | Leave-one-GPU-out (A100) | Leave-one-GPU-out (H100) | Leave-one-model-out (avg 6 folds) |
-|---|:---:|:---:|:---:|:---:|:---:|
-| Roofline | | | | | |
-| Per-graph mean | | | | | |
-| Graph-level pooled MLP | | | | | |
-| XGBoost | | | | | |
-| **GNN (GAT)** | | | | | |
-
-**解读规则**：
-
-- GNN 必须在所有 5 列击败 Roofline、Per-graph mean、pooled MLP → C1 成立
-- GNN 和 XGBoost 的 gap ≥ 3-5 MAPE 点是 graph-level learning 的增益
-- leave-one-GPU-out 三折必须分开报告，不报 avg 以揭示 outlier
-
-**复现**：
-
-```bash
-python scripts/train_and_eval.py --csv data/raw/all.csv --split random
-python scripts/train_and_eval.py --csv data/raw/all.csv --split leave-gpu=v100
-python scripts/train_and_eval.py --csv data/raw/all.csv --split leave-gpu=a100
-python scripts/train_and_eval.py --csv data/raw/all.csv --split leave-gpu=h100
-for m in gpt2-small gpt2-medium gpt2-large bert-base bert-large t5-small; do
-  python scripts/train_and_eval.py --csv data/raw/all.csv --split leave-model=$m
-done
-```
-
-#### Table 2 — 硬件泛化（Hero，支撑 C2）
-
-训练集固定 = V100 + T4 + A100 + A10 + L4 + H100，改变 target。
-
-**实际数字（2026-04-18 填充，MAPE %；详见 [results/EXPERIMENTS.md](results/EXPERIMENTS.md) §6.5）**：
-
-| Method \ Target | H100 hold-out | H200 zero-shot | H200 fs100 | **B200 zero-shot** | B200 fs50 | B200 fs100 | B200 fs200 |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| Roofline         | 97.0  |  98.0  |  98.1  |  98.7  |  98.8  |  98.8  |  98.7 |
-| Per-graph mean   | 439.8 | 381.9  | 318.2  | 436.6  | 385.7  | 363.7  | 316.8 |
-| XGBoost          | **14.0** | **12.0** | **4.4** | **12.7** | **8.3** | **8.7** | **5.6** |
-| **GNN (v2)**     | 67.8  |  20.9  |  19.8  | **27.9** ✅ | 22.9 | 25.2 | **9.7** |
-| GNN (v1 历史)    | 46.5  |  45.2  | **127 💥** | 51.0 | 44.5 | **139 💥** | 37.8 |
-
-**解读**：
-- ✅ **B200 zero-shot 27.9% < 30% 阈值达标**（v1 → v2 从 51% 降到 27.9%）
-- ✅ **v1 fs100 爆炸已修复**（B200 139% → 25.2%，H200 127% → 19.8%）
-- ✅ **B200 fs200 = 9.7%** 是首个 < 10% 的 v2 GNN 数字
-- ⚠️ **XGBoost 在所有 zero-shot 硬件 split 上仍更强**（4.4–12.7%）→ 见 §10 风险 & 叙事重排
-
-**原始格子（保留作参考）**：
-
-| Method \ Target | H100 hold-out<br/>(in-distribution) | H200 zero-shot<br/>(same arch interp.) | H200 few-shot (100) | **B200 zero-shot**<br/>(hero, cross-arch) | B200 few-shot (50/100/200) |
-|---|:---:|:---:|:---:|:---:|:---:|
-| Roofline | | | | | |
-| Per-graph mean | | | | | |
-| XGBoost | | | | | |
-| **GNN** | | | | | |
-
-**补充图表**：B200 few-shot 学习曲线，x 轴 N ∈ {0, 50, 100, 200}（log scale），y 轴 MAPE。
-
-**解读规则**：
-
-- B200 zero-shot MAPE < 30% → C2 成立
-- B200 zero-shot > H200 zero-shot → "跨架构外推比同架构插值难"，符合假设
-- B200 few-shot N=50 能消除 > 50% 的 zero-shot 误差 → 迁移学习有效
-
-**复现**：
-
-```bash
-python scripts/train_and_eval.py --csv data/raw/all.csv --split zero-shot=h200
-python scripts/train_and_eval.py --csv data/raw/all.csv --split zero-shot=b200
-python scripts/train_and_eval.py --csv data/raw/all.csv --split zero-shot=h200 --few-shot-samples 100
-python scripts/train_and_eval.py --csv data/raw/all.csv --split zero-shot=b200 --few-shot-samples 50
-python scripts/train_and_eval.py --csv data/raw/all.csv --split zero-shot=b200 --few-shot-samples 100
-python scripts/train_and_eval.py --csv data/raw/all.csv --split zero-shot=b200 --few-shot-samples 200
-```
-
-#### Table 3 — 消融（支撑 C3 + 辩护 C2）
-
-只做 **2 行消融**，每行从 GNN 只去掉一个组件，跑在最重要的 2 个 split 上。
-
-| Variant | 从 GNN 去掉 | 保留 | 支撑 |
-|---|---|---|:---:|
-| GNN w/o edges（= Per-kernel sum MLP） | 图结构（边 / message passing） | 节点特征 + s + h | **C3** 图结构边际贡献 |
-| GNN w/o `h`（constant-h） | 硬件向量（替换为训练均值） | 图 + 节点 + s | **C2 诊断** h 向量是否真被学到 |
-| **GNN (main)** | — | 全部 | 上限 |
-
-**实际数字（2026-04-18 填充；Table 3 改为 P1 v2 三开关 ablation，更直接回答 C3；详见 [results/EXPERIMENTS.md](results/EXPERIMENTS.md) §6.3）**：
-
-| Variant | leave-model=gpt2-large MAPE | 说明 |
-|---|:---:|---|
-| **GNN v2 (full, 三开关全开)** | **25.6%** 🏆 | baseline |
-| 仅 `node_level_sh` | 82.8% | 单独开，架构不稳 |
-| 仅 `sum readout` | 350.6% | 单独开，崩溃 |
-| 仅 `global_skip` | 40.4% | 单独开 ≈ XGBoost (39.4%) |
-| 三开关全关 (= v1 等价) | 68.3% | v1 基线 |
-
-**关键叙事**：**三开关是协同的，不是可加的**。单开任何一项都比全关更糟或只追到 XGBoost 水平；三个一起才能跨过 XGBoost 的门槛（25.6% vs 39.4%）。Table 3 的 caption 应直接点出这个 synergy，避免被误读为"哪个开关贡献最大"。
-
-**Per-kernel MLP（NeuSight 风格，GNN w/o edges）**：在 6/6 leave-model split 上 44–1093% 极不稳定，平均远劣于 GNN → C3（图结构 load-bearing）成立。
-
-**原始格子（保留作参考）**：
-
-| Variant | leave-one-GPU-out avg MAPE | B200 zero-shot MAPE |
-|---|:---:|:---:|
-| GNN w/o edges | | |
-| GNN w/o `h` | | |
-| **GNN (full)** | | |
-
-**解读规则**（两组关键对比）：
-
-- `GNN − (w/o edges)` 的 gap ⇒ 图结构的边际贡献。Gap 显著 → C3 成立；gap 为零 → **诚实报告**："图结构在本项目 scope 下无边际贡献，主要信号来自节点级特征"（这是可发表的 negative finding，比掩盖更有价值）
-- `GNN − (w/o h)` 的 gap，尤其在 B200 zero-shot 上 ⇒ h 向量是否真承载硬件信息。Gap 为零 → C2 的 "spec-based 泛化" claim 站不住
-
-**正文 sanity check（不占表格行）**：
-
-- 人为把 h 中 TFLOPS 维度调高 2×，compute-bound op 的预测延迟应单调下降——通过率 > 80% 才算 h 分支物理意义合理
-- 把 `s = (batch, seq)` 清零，MAPE 应显著恶化（验证 s 分支被使用，属于功能性检查）
-
-**复现**：
-
-```bash
-# 需要先实现：scripts/train_and_eval.py 的 --model-variant={gnn,per_kernel_mlp} + --constant-h 开关
-python scripts/train_and_eval.py --csv data/raw/all.csv --split leave-gpu=v100 --model-variant per_kernel_mlp
-python scripts/train_and_eval.py --csv data/raw/all.csv --split leave-gpu=a100 --model-variant per_kernel_mlp
-python scripts/train_and_eval.py --csv data/raw/all.csv --split leave-gpu=h100 --model-variant per_kernel_mlp
-python scripts/train_and_eval.py --csv data/raw/all.csv --split zero-shot=b200 --model-variant per_kernel_mlp
-python scripts/train_and_eval.py --csv data/raw/all.csv --split leave-gpu=v100 --constant-h
-# ... 依此类推
-```
-
-### 5.3 明确不做的实验（scope 控制）
-
-为避免 scope 发散，以下在 Week 1 初稿里显式排除，只在时间充裕时加回：
-
-| 候选实验 | 为什么不做 |
+| 特征 | 物理意义 |
 |---|---|
-| Graph Transformer vs GAT 主表对比 | 降级为正文一句话；代码已支持 `--backbone=transformer`，附录给数字即可，不占主表 |
-| Per-node vs post-readout HW fusion（Akhauri 2024 风格） | 同上；作为"有想法没时间做"写进 Future Work |
-| 移除推理配置 s（zero-s） | **不做**——不支撑任何 claim，属于 sanity check 范畴 |
-| `arch_gen` ordinal 消融 | 已在 2026-04-17 从硬件向量移除，无此字段 |
-| torch.compile / vLLM 对比 | Proposal §4 明确排除；写进 Limitations |
-| ResNet 跨家族泛化 | Scope 收窄到 Transformer，写进 Limitations |
+| FP16 TFLOPS | 峰值算力 |
+| HBM GB | 显存容量 |
+| HBM 带宽 | 显存带宽 |
+| L2 cache MB | 片上缓存（影响小 kernel + 带宽放大） |
+| SM 数量 | 并行单元数 |
 
-### 5.4 Report Section 5 Experiments 骨架（直接可抄）
+**为什么这 5 维**：全部为片上 spec，没有互联带宽，没有代际 ordinal——跟 NeuSight 的 on-chip-only 惯例一致。详见 [research_review.md](research_review.md) §2.2。
 
-```
-5. Experiments
-  5.1 Setup
-      - Data: ~2800 samples (2000 hero + 800 holdout) across V100/T4/A100/A10/L4/H100/H200/B200
-      - Splits: random / leave-one-GPU-out / leave-one-model-out /
-                zero-shot / few-shot
-      - Metrics: MAPE / Spearman ρ / Top-1
-      - Baselines: Roofline / Per-graph mean / Pooled MLP / XGBoost
-  5.2 Main Results — supports C1 (Table 1)
-  5.3 Cross-GPU-Generation Extrapolation — supports C2 (Table 2 + Figure 1)
-  5.4 Ablations — supports C3 and diagnoses C2 (Table 3)
-      - GNN vs Per-kernel MLP: graph structure contribution
-      - GNN vs constant-h GNN: hardware vector contribution
-  5.5 Limitations
-      - HF eager mode only (no torch.compile / vLLM)
-      - Transformer family only (no CNN / other archs)
-      - Forward-pass / prefill only (no decode / KV cache)
-```
+### 2.2 GNN v2 架构（commit 866bbee）
 
----
+3 个改动**协同生效**（不是可加的，详见 EXPERIMENTS §6.3 ablation）：
 
-## 6. 两周详细时间线
+1. **node_level_sh=True**：s 和 h broadcast 到每节点，GAT 之前就拼到 `x`
+2. **readout="sum"**：`global_add_pool` 替代 mean+max，对齐 latency 加性结构
+3. **global_skip=True**：拼 `[log1p(total_flops), log1p(total_bytes), log1p(num_nodes), log1p(num_edges)]` 给 head
 
-### Week 1：基础设施 + 数据收集 + Baseline（4月14日–20日）
+实现：[src/hetero_cost_model/models/gnn.py](src/hetero_cost_model/models/gnn.py)
 
-#### Day 1–2（周一–周二）：基础设施搭建 + 硬阻塞项先验证
+### 2.3 Baselines
 
-**Day 1 硬阻塞项 —— ✅ 已完成 2026-04-17**：
-
-- ✅ [extractor.py](src/hetero_cost_model/graph/extractor.py) 新增 `hf_input_names` 参数，走 `transformers.utils.fx.symbolic_trace`
-- ✅ [scripts/smoke_test_graphs.py](scripts/smoke_test_graphs.py) 对 6 个模型全量 CPU 调用 `extract_graph`，**6/6 PASS**（gpt2-small: 1247 nodes, gpt2-medium: 2471, gpt2-large: 3695, bert-base: 529, bert-large: 1021, t5-small: 1159）
-- ✅ T5 通过（需要 `["input_ids", "decoder_input_ids"]` + `T5ForConditionalGeneration` + `attn_implementation="eager"`）
-- ✅ `transformers` 版本 pin 到 `>=4.35,<4.52`（4.46.3 已验证；v5 删 `transformers.utils.fx`，4.52+ 的 `masking_utils.py` 用 vmap 和 HFProxy 不兼容）
-
-**守护措施（必须保留）**：不要升级 `transformers` 到 ≥ 4.52；每次环境重装 / 新成员入组后先跑 smoke test；加新模型时先在 `MODELS` 列表里加一条验证。详见 [research_review.md §3.1](research_review.md)。
-
-| 负责人 | 任务 | 交付物 | 需要GPU | 状态 |
-|--------|------|--------|---------|------|
-| **Xiang Li** | (a) fx smoke test；(b) 用 HF fx 修复 [extractor.py](src/hetero_cost_model/graph/extractor.py) 节点特征提取；(c) 增加 FP16 精度下 `memory_bytes` 的正确估算；(d) `scripts/extract_graphs.py` 图序列化 + 6 个 pkl committed；(e) `HARDWARE_REGISTRY` 校对（pcie_gbs→l2_cache_mb，移除 arch_gen）；(f) 本地端到端冒烟 | `graph_extractor.py` + smoke test + `extract_graphs.py` + `end_to_end_smoke.py` + `hardware.py` | 否 | ✅ 完成 2026-04-17 |
-| **Xinhao Tan** | 构建 profiling 框架：(a) CUDA events 计时 ✅；(b) warmup=50、runs=100 ✅；(c) 训练 target 改用 **p50** ✅；(d) 全部模型 `attn_implementation="eager"` ✅（在 `model_zoo.py` 里统一）；(e) `actual_gpu_name` / `actual_mem_gb` / `actual_sm_count` 写入 CSV ✅（`runtime_info.py`）；(f) 驱动脚本 `scripts/run_profiling.py`（idempotent + OOM-safe + 20 列 schema）| `profiling.py` + `runtime_info.py` + `scripts/run_profiling.py` | 否（本地 CPU 调试） | ✅ 完成 2026-04-17 |
-| **Zhikai Hu** | (a) GNN 代价模型（GAT + Graph Transformer 变体）已存于 [models/gnn.py](src/hetero_cost_model/models/gnn.py)；(b) 硬件特征 schema 已敲定（5 维 L2-cache 版）；(c) 训练循环 MSE + ranking loss 已存于 [training/loop.py](src/hetero_cost_model/training/loop.py)；(d) **XGBoost baseline** 新增 [baselines.py:XGBoostBaseline](src/hetero_cost_model/baselines.py)；(e) **Per-graph mean 诊断 baseline** 新增；(f) CSV→Sample 管线 [data.py:load_samples_from_csv](src/hetero_cost_model/data.py)；(g) 一键评估驱动 `scripts/train_and_eval.py`（4 种切分） | `cost_model.py` + `train.py` + `baselines.py` + `data.py` + `train_and_eval.py` | 否 | ✅ 完成 2026-04-17 |
-
-**Day 2 检查点**：三人在本地完成各自模块的单元测试，确认接口可以对接。**全部 绿灯**：pytest 22/22 + smoke test 6/6 + end-to-end 8/8 + train_and_eval dry-run 4 baseline 并列输出均正常。下游代码 pipeline 完备，等 Day 3 真数据。
-
-#### Day 3–4（周三–周四）：数据收集冲刺 —— ✅ Modal 部分完成 2026-04-17
-
-**实际收集结果（7 个 GPU 全部 Modal 上采集完成，PSC V100 待定）**：
-
-| GPU | actual_gpu_name | 行数 | OOM | noisy | 覆盖 |
-|---|---|---:|---:|---:|---|
-| T4 | Tesla T4 | 271 | 0 | 22 | 6 models (gpt2-large 47/48，缺 bs=16×seq=1024) |
-| A100 | NVIDIA A100-SXM4-40GB | 272 | 0 | 4 | 完整 |
-| A10 | NVIDIA A10G (即 Modal SKU "A10") | 272 | 0 | 6 | 完整 |
-| L4 | NVIDIA L4 | 272 | 0 | 4 | 完整 |
-| H100 | NVIDIA H100 80GB HBM3 | 272 | 0 | 21 | 完整 |
-| H200 | NVIDIA H200 | 272 | 0 | 0 | 完整 |
-| B200 | NVIDIA B200 | 272 | 0 | 2 | 完整 |
-| **合计** | | **1,903** | **0** | 59 (3%) | |
-
-**已超额完成数据量目标**（原计划 1500+，实际 1903）。CSV 全部在 `data/raw/` 里 committed。
-
-**整理的清洗（已落地）**：
-
-- 每个 CSV 减掉 16 行 BERT × seq=1024 的 B 类模型能力限制（非硬件 OOM，无信号）
-- 配置 grid 加 `max_seq_len` 预过滤（见 [model_zoo.py](src/hetero_cost_model/model_zoo.py) + [run_profiling.py](scripts/run_profiling.py)）
-- A10G SKU quirk（Modal 给的 A10 其实是 A10G）→ 正则 + HARDWARE_REGISTRY 已对齐实际规格
-
-**Day 3-4 踩的坑与解决**：
-
-- **T4 × gpt2-large 多次 "silently stall"**（30+ 分钟 local log 无进展）→ 实际上容器在云端一直成功写 Volume。**教训：Modal 上 local log stall ≠ container 死，`modal volume ls` 才是 source of truth**。最终通过 Volume-backed 的 resume 机制拿回 47/48 configs
-- **B200 首次失败**：torch 2.5.1 没有 sm_100 kernel → 升级到 `torch>=2.7` 统一镜像
-- **Modal 不支持 non-preemptible GPU**：改用 Volume 持久化 + auto-retry 10 次模拟
-- **Modal 会把 A100 升成 A100-80GB、A10 给 A10G**：`H100!` / `A100-40GB` 锁定 SKU + 在 CSV 里记录 `actual_gpu_name` 做二次校验
-
-**V100 (PSC) 状态**：⏳ 未启动。原计划作为训练 anchor 提供 Volta (sm_70)。**不是 blocker**——现有 7 个 GPU 已覆盖 5 种架构（Turing → Ampere → Ada → Hopper → Blackwell）；V100 可作为 Week 2 stretch 补充数据。
-
-#### Day 5–7（周五–周日）：Baseline 训练与验证 → 产出 Table 1（主结果） —— ✅ 完成 2026-04-17/18（Phase 5 + 6）
-
-产出目标是 §5.2 **Table 1** 的完整 5 method × 5 split 格子（见 §5.2）。三种 baseline（Roofline / Per-graph mean / XGBoost / Pooled MLP）已在 Day 1-2 由 Zhikai 实现，这里只是用真数据跑一遍。
-
-| 负责人 | 任务 | 交付物 | 需要GPU |
-|--------|------|--------|---------|
-| **三人协作** | 跑 Table 1 全部 25 格：`train_and_eval.py` 依次过 5 个 split（random / leave-gpu × 3 / leave-model avg 6 folds）；每个 split 自动输出 4 method（GNN / XGBoost / Per-graph mean / Roofline）并列对比；pooled MLP 加 `--model-variant pooled_mlp` 走一遍 | Table 1 完整 5×5×3 数字（MAPE / Spearman / Top-1） | 训练很轻，CPU 可以 |
-| **Xiang Li** | 整合所有数字生成报告用 LaTeX 表格模板；若发现 outlier fold（某折 MAPE 异常大）做诊断 | `table1_main_results.tex` | 否 |
-
-> **Week 1 里程碑（C1 判据）**：GNN 在所有 5 split 上击败 Roofline / Per-graph mean / Pooled MLP；对 XGBoost 至少 3-5 MAPE 点优势。leave-one-GPU-out CV 必须报三折具体数字而非 avg。若 C1 不成立 → **不强行刷数字**，在 Day 7 复盘日决定是 fallback 到更小 scope 还是调整模型。
->
-> **✅ 实际达成（2026-04-18）**：GNN 在 6/6 leave-model-out split 上胜 XGBoost 13.7–104.7 点，在所有 baseline 上完胜 → **C1 成立**。Random / leave-gpu-out 上 XGBoost 更强（分布内 / 同图不同硬件不是 GNN 主场），写进 §5.5 Limitations。
-
----
-
-### Week 2：泛化实验 + 消融研究 + 报告撰写（4月21日–28日）
-
-#### Day 8–9（周一–周二）：B200 数据 & 硬件泛化 —— ✅ 完成 2026-04-17/18（Phase 6 P4）
-
-| 负责人 | 任务 | 交付物 | 需要GPU |
-|--------|------|--------|---------|
-| **Xiang Li** | 【Modal】同时提交 H200 + B200 profiling job（锁定 SKU：`gpu="B200"`，不是 `B200+`）。数据拆分：**H200 改为 few-shot 设置**（50/100/200 samples）；**B200 作为 hero zero-shot**，另留 20% 做 few-shot 对照 | `h200.csv` + `b200.csv` | H200 + B200 (Modal) |
-| **Xinhao Tan** | Zero-shot 评估：V100+T4+A100+A10+L4+H100 训练好的模型直接在 B200 上跑。**同表必须报告对照基线**：(a) Constant-h 基线、(b) HW-MLP only 基线、(c) Per-graph mean + GPU offset。这是诊断 h 分支是否真的在学硬件缩放的关键 | `zero_shot_results.csv` | 否 |
-| **Zhikai Hu** | 实现 few-shot 微调：取训练好的模型，分别用 50/100/200 个 H200/B200 样本微调。对比从头在目标 GPU 上训练的效果。输出误差改善曲线 | `few_shot_results.csv` | 否（CPU 训练即可） |
-
-**"H200 改成 few-shot"的原因**：评审发现 H200 vs H100 在 h 向量中只有 `memory_gb` 和 `bandwidth_gbs` 不同（其余 3 维 `fp16_tflops / l2_cache_mb / sm_count` 完全相等），compute-bound 区 latency 本就 ≈ H100——同架构插值对 C2 缺乏挑战性（即使 6 个 training anchor 也无济于事）。few-shot 更诚实。详见 [research_review.md §2.1](research_review.md)。
-
-#### Day 10–11（周三–周四）：消融研究 & 跨模型评估 —— ✅ 完成 2026-04-17/18（Phase 6 P1 + P2）
-
-严格锁定 §5.2 Table 3，只做 2 行消融（GNN w/o edges = Per-kernel sum MLP；GNN w/o h = constant-h）。其他候选实验全部 push 到 Future Work（见 §5.3）。
-
-| 负责人 | 任务 | 交付物 | 需要GPU |
-|--------|------|--------|---------|
-| **Xiang Li** | 实现 `models/per_kernel_mlp.py`（~40 行，NeuSight 风格 per-node sum MLP）；加 `--model-variant per_kernel_mlp` + `--constant-h` 开关到 `train_and_eval.py`；跑 Table 3 的 2 消融 × 2 split = 4 次训练 | `ablation_table.csv`（3 method × 2 split = 6 数字） | 否 |
-| **Xinhao Tan** | 跨模型泛化（Table 1 的 leave-one-model-out 6 折已覆盖，此处只补**规模泛化曲线**图）：GPT-2 Small 训练 → Medium / Large 测试 MAPE | `cross_model_results.csv` + Figure | 否 |
-| **Zhikai Hu** | 两个 sanity check（正文文字引用，不占表格）：(1) 把 `s` 清零看 MAPE 恶化幅度；(2) h 单调性扰动——人为 TFLOPS +2×，compute-bound op 的预测延迟应单调降；通过率 > 80% 算合格 | `sanity_checks.md`（写进 report §5.4） | 否 |
-
-**Day 10 同步开始报告写作**：在 Overleaf 上创建共享 LaTeX 项目，搭建报告骨架。
-
-#### Day 12–14（周五–周日）：报告撰写 & 最终验证 —— 🟢 可开始（数据齐全）
-
-| 负责人 | 任务 | 交付物 |
-|--------|------|--------|
-| **Xiang Li** | 撰写 Sections 1-3（Introduction、Problem Definition、Related Work）；生成所有图表（架构图、延迟对比图）；代码整理 + README | 报告 Sec 1-3 + 图表 |
-| **Xinhao Tan** | 撰写 Section 4-5（Method、Experiments）；制作所有结果表格；确保可复现性（编写端到端实验复现脚本） | 报告 Sec 4-5 + 表格 |
-| **Zhikai Hu** | 撰写 Section 6-7（Ablation/Analysis、Conclusion）；合并最终报告；通读校对；准备代码提交包 | 最终报告 PDF + 代码 zip |
-
-> **Week 2 里程碑**：完整报告，包含 B200 硬件泛化结果（zero-shot + few-shot）、跨模型评估、消融研究，以及整洁的代码库。
->
-> **🟢 实际状态（2026-04-18）**：B200 hero 结果 + few-shot 曲线 + 6 折 leave-model-out + v2 三开关 ablation + leave-gpu-out 诊断全部齐备，**只差 Day 12-14 的报告撰写**。
-
----
-
-## 7. GPU 排队优化策略
-
-### Profiling Job 设计
-
-每个 profiling job 是一个自包含脚本：
-
-```
-加载模型 → 遍历 (batch_size, seq_len) 配置网格 → 每个配置运行 (50 次 warmup + 100 次测量，CUDA events 计时) → 保存结果到 CSV
-```
-
-**关键改动 vs 初稿**（详见 [data_collection_plan.md](data_collection_plan.md)）：
-
-- warmup 10 → 50，runs 50 → 100，训练 target 用 **p50** 而非 mean
-- `torch.cuda.Event(enable_timing=True)` 替换 `time.perf_counter()`
-- `taskset -c` 绑核，不申请 `--exclusive`（PSC 要 8 卡整机预约）
-- Modal 锁定 SKU（`H100!` / `A100-40GB` / `B200`），CSV 记录 `actual_gpu_name`
-
-单次 GPU session 约 1.5-2 小时（因 warmup/runs 翻倍 + 配置矩阵扩大）即可覆盖全部 6 个模型 × 所有配置。
-
-### 排队/提交计划
-
-| 时间 | 任务 | 平台 | 谁负责 |
-|------|------|------|--------|
-| Day 3-4 | V100 profiling | PSC（排队） | Xiang |
-| Day 3-4 | H100 profiling | PSC（排队） | Xinhao |
-| Day 4 | A100 profiling | Modal（即时） | Xinhao |
-| Day 8 | H200 + B200 profiling | Modal（即时） | Xiang |
-
-Modal job 无需排队，提交后几分钟内开始运行，是 PSC 排队的天然缓冲。
-
-### 备选方案
-
-如果 PSC V100/H100 排队超过 2 天：
-
-1. 先用 Modal A100 数据开始训练（A100 即时可得）
-2. PSC 数据到位后继续补充训练集
-3. H200 和 B200 不受影响（均在 Modal）
-
----
-
-## 8. 评估指标体系
-
-每个指标都绑定到 §5.2 的某张表，不产出"游离指标"。
-
-| 指标 | 定义 | 出现在 | 目标阈值 |
-|---|---|---|---|
-| **MAPE** | 预测延迟 vs 实际延迟的平均绝对百分比误差 | Table 1 / 2 / 3 所有格 | 主 claim 判据，见下方各表阈值 |
-| **Spearman ρ** | 预测排序 vs 实际排序的秩相关 | Table 1 / 2 | 补充指标，对 outlier 鲁棒 |
-| **Top-1 准确率** | 对每个 (model, gpu) 组正确识别最优 (batch, seq) 配置的比例 | Table 1 / 2 | > 70% |
-
-### Claim 判据（论文能 defend 的量化门槛）
-
-| Claim | 指标 | 判据 | **实际结果 (2026-04-18)** |
-|---|---|---|---|
-| **C1** — 学习模型击败分析式 / 诊断基线 | Table 1 MAPE | GNN 在所有 5 split 上击败 Roofline、Per-graph mean、Pooled MLP；且对 XGBoost 至少 3-5 MAPE 点优势 | ✅ **6/6 leave-model-out 上 GNN 胜 XGBoost 13.7–104.7 点**；random/leave-gpu 上 XGBoost 更强（见 §10 叙事重排） |
-| **C2** — spec-only 零样本外推到 Blackwell | Table 2 MAPE | B200 zero-shot MAPE < 30%；H200 zero-shot < 20%；B200 few-shot N=50 消除 ≥ 50% zero-shot 误差 | ⚠️ **B200 27.9% < 30% 达标；H200 20.9% 接近 20%；B200 fs50 22.9% 消除 18% 误差**（未达 50%）；但 XGBoost 4.4–12.7% 在同 split 上更强 |
-| **C3** — 图结构有边际贡献 | Table 3 MAPE | GNN 相对 Per-kernel sum MLP 在 leave-one-GPU-out avg 或 B200 zero-shot 上 gap ≥ 3 MAPE 点 | ✅ **Per-kernel MLP 在 6/6 leave-model split 上 44–1093%** 极不稳定，GNN 稳定 20–33%，gap ≥ 20 点 |
-| **C2 诊断** — h 向量真被学到 | Table 3 MAPE | GNN 相对 constant-h GNN gap 显著（尤其在 B200 zero-shot） | ⏸ 未单独跑 constant-h ablation；P2 诊断显示 `node_level_sh`（= h 注入路径）是 v2 必需——去掉它 MAPE 直接爆到 619.7%，间接证明 h 被用到 |
-
-**如果判据不达标**：不强行宣布胜利，在 report §5 正文诚实写 "we find that ..." 并在 §5.5 Limitations / Future Work 讨论成因。负面结论对课程项目评分无负面影响，**但掩盖或选择性汇报有严重影响**。
-
-### 两个正文 sanity check（不占表格）
-
-- **h 物理单调性**：人为 +2× TFLOPS，compute-bound op 预测延迟应单调降；通过率 > 80% 才说 h 分支物理意义合理。若失败 → C2 核心假设不成立，需在 Limitations 中讨论
-- **s 功能性**：把 `s` 清零，MAPE 应显著恶化（简单验证 config 分支不被忽略）
-
----
-
-## 9. 工作负载模型列表
-
-聚焦 Transformer 架构，与项目标题 "LLM Inference Optimization" 保持一致。通过不同规模、不同类型（encoder-only / decoder-only / encoder-decoder）来测试泛化能力：
-
-| 模型 | 参数量 | 类型 | 角色 | 测试 Batch Size |
-|------|--------|------|------|----------------|
-| GPT-2 Small | 124M | Decoder-only | 主要训练工作负载 | 1, 4, 8 |
-| GPT-2 Medium | 355M | Decoder-only | 规模泛化测试（训练在 Small → 测试在 Medium） | 1, 4 |
-| GPT-2 Large | 774M | Decoder-only | 进一步规模泛化（如 GPU 内存允许） | 1, 2 |
-| BERT-base | 110M | Encoder-only | 架构类型泛化（decoder → encoder） | 1, 4, 8, 16 |
-| BERT-large | 340M | Encoder-only | encoder 内部规模泛化 | 1, 4, 8 |
-| T5-small | 60M | Encoder-Decoder | 架构类型泛化（第三种 Transformer 变体） | 1, 4, 8 |
-
----
-
-## 10. 风险评估与应对
-
-| 风险 | 影响 | 应对策略 |
-|------|------|----------|
-| ~~**`torch.fx.symbolic_trace` 挂在 HF 模型上**~~ **✅ 已解决 2026-04-17** | ~~Day 1 单点故障~~ | 已改走 `transformers.utils.fx.symbolic_trace` + pin `transformers<4.52` + smoke test（6/6 PASS）。**守护措施**：不要升级 transformers 到 ≥ 4.52；环境重装后先跑 smoke test |
-| **Modal 自动 SKU 升配污染数据** | h 向量与实际硬件对不上，整行污染 | 一律用锁定 SKU（`H100!` / `A100-40GB` / `B200`）；CSV 强制写入 `actual_gpu_name`；加载训练集时按实际卡型分组 |
-| **3-GPU 训练 → h 分支在查表而非学缩放** | 硬件泛化 claim 站不住 | 必须跑 Constant-h、HW-MLP-only、Per-graph-mean 三个对照；做 h 合成扰动单调性测试 |
-| **GPU 排队等待过长** | profiling 数据不足；B200 结果缺失 | 脚本全部预先调试好批量运行；Modal 天然无排队可作缓冲；必要时减少模型数量 |
-| **代价模型精度不够 / 被 XGBoost 追平** | 无法证明 GNN 结构的价值 | 回退到排序准确性（比绝对预测更容易）；若 GNN 和 XGBoost 持平，**诚实报告**，重点放在连续 h 向量 + LLM 图的组合与泛化上 |
-| **B200 驱动/CUDA 兼容性问题** | 无法在 Blackwell 上 profiling | 使用 V100→H100 趋势外推的合成 B200 特征向量；在报告中作为 future work 讨论 |
-| **跨模型泛化失败** | 模型只在同架构族内有效 | 诚实报告负面结果（这对课程项目也是合格结论）；增加架构类型条件特征 |
-| **报告写作时间紧张** | 报告不完整或仓促 | 第 10 天就开始写报告骨架；三人并行各写各的章节；用共享 Overleaf 协作 |
-
-**兜底 fallback 定位**（见 [research_review.md §6](research_review.md)）：如果 B200 外推失败，把评估从 "zero-shot to B200" 降级为 "**sample-efficient cross-GPU-generation extrapolation**"。主 claim 换成 leave-one-GPU-out + H200 few-shot + XGBoost 对比，B200 作为 honest stretch goal 写成 negative finding。
-
----
-
-### §10 补充（2026-04-18）：XGBoost 在硬件外推上更强——叙事重排
-
-**实验结果出现 claim hierarchy 调整信号**：
-
-| Split 类型 | GNN 胜 XGBoost? | 证据 |
+| Baseline | 输入 | 角色 |
 |---|---|---|
-| **未见图结构**（leave-model-out × 6） | ✅ **大胜 13.7–104.7 MAPE 点** | Phase 6 P0 |
-| **未见硬件**（zero-shot=b200 / leave-gpu=h100 / zero-shot=h200 等） | ❌ **XGBoost 4.4–14% vs GNN 9.7–67.8%** | Phase 6 P4 + P2 |
+| **Roofline** | per-op FLOPs/bytes + hardware peak | 分析式参考（0 训练） |
+| **Per-graph mean** | (model, gpu) lookup | 数据泄漏诊断 |
+| **Pooled MLP** | mean-pool(nodes) ‖ s ‖ h | 弱学习对照 |
+| **XGBoost** | 12 维全局特征（log1p(total_flops/bytes), num_nodes/edges, batch, seq, h×5） | **强 baseline**（陈天奇的工具） |
+| **Per-kernel MLP** | per-node MLP + scatter-sum（NeuSight 风格） | GNN 去边消融 |
+| **GNN (GAT v2)** | 3 层 GAT + sum readout + global skip | 主方法 |
 
-**原因**：当图都见过、只剩硬件特征插值时，`硬件 5 维 × 全局图特征（flops/bytes/nodes/edges）` 是光滑插值面，GBDT 是理想 kernel。GNN 的 per-op 粒度在这种 setting 下反而增加了过拟合风险。
-
-**叙事重排（已与团队对齐，详见 [results/EXPERIMENTS.md](results/EXPERIMENTS.md) §6.6 H-6）**：
-
-1. **主论点改为 C1 + C3**（GNN for graph generalization）：6/6 模型上 GNN 胜 XGBoost，是课程项目的强卖点
-2. **C2 降级为"达标 + trade-off 分析"**：B200 zero-shot 27.9% 达标（plan 阈值 <30%），但诚实记录 XGBoost 在 zero-shot 硬件 split 上更强
-3. **§5.5 Limitations 诚实写**：
-   - v2 架构在"未见图" vs "未见硬件"两类泛化间有 trade-off
-   - leave-gpu=h100 从 v1 46.5% → v2 67.8% 退步（架构层面 trade-off，非单个 flag 问题）
-   - Per-kernel MLP baseline 在 6 个 split 上数值不稳定（未单独调参）
-
-**为什么这是成功项目**：发现"GNN 的价值维度是 graph 泛化而非硬件外推"，这个 finding 比原版 C2 单打独斗更有 MLSys 课程贡献感——有 6 个模型的硬证据 + 清晰机制解释。
+**统一驱动**：`scripts/train_and_eval.py`，支持 `--split={random,leave-gpu=X,leave-model=X,zero-shot=X}` + few-shot。
 
 ---
 
-## 11. 最终交付物清单
+## 3. 实验结果（重组为 RQ1/RQ2 视角）
 
-1. **项目报告**（8-10 页，LaTeX）：Introduction（含 4 项 scope 决策 vs proposal 声明）、Problem Definition、Related Work（至少覆盖 NeuSight、Akhauri 2024、HELP、Habitat、MAPLE、PerfSage、Vidur）、Method、Experiments（5+ 表格/图表，含三种切分的 leave-one-out CV + 硬件泛化 + 消融）、Limitations（eager mode only, no torch.compile）、Conclusion
+详细 16 轮 sweep 数字见 [results/EXPERIMENTS.md](results/EXPERIMENTS.md)。下表是**外推主表**（删除 random 的 in-distribution 行）。
 
-2. **代码库** — 已在 repo 中（GitHub 可见）：
+### 3.1 主表 Extrapolation Results（poster Table 1，MAPE %）
 
-   | 路径 | 角色 | 状态 |
-   | --- | --- | --- |
-   | [src/hetero_cost_model/graph/](src/hetero_cost_model/graph/) | HF fx tracing + 节点特征 + FLOPs 估算 | ✅ |
-   | [src/hetero_cost_model/hardware.py](src/hetero_cost_model/hardware.py) | 5 维硬件特征注册表 | ✅ |
-   | [src/hetero_cost_model/strategies.py](src/hetero_cost_model/strategies.py) | `InferenceConfig` + `config_grid` | ✅ |
-   | [src/hetero_cost_model/profiling.py](src/hetero_cost_model/profiling.py) | CUDA events 计时 | ✅ |
-   | [src/hetero_cost_model/runtime_info.py](src/hetero_cost_model/runtime_info.py) | `actual_gpu_name` 查询 + SKU 锁定 | ✅ |
-   | [src/hetero_cost_model/data.py](src/hetero_cost_model/data.py) | Sample / LatencyDataset / `load_samples_from_csv` | ✅ |
-   | [src/hetero_cost_model/models/gnn.py](src/hetero_cost_model/models/gnn.py) | GAT + Graph Transformer 变体 | ✅ |
-   | [src/hetero_cost_model/baselines.py](src/hetero_cost_model/baselines.py) | Roofline / Per-graph mean / XGBoost | ✅ |
-   | [src/hetero_cost_model/training/](src/hetero_cost_model/training/) | 训练循环 + MSE + ranking loss | ✅ |
-   | [src/hetero_cost_model/model_zoo.py](src/hetero_cost_model/model_zoo.py) | 6 模型注册 + eager 加载 + fx input_names | ✅ |
-   | [src/hetero_cost_model/metrics.py](src/hetero_cost_model/metrics.py) | MAPE / Spearman / NDCG / Top-K | ✅ |
-   | [scripts/smoke_test_graphs.py](scripts/smoke_test_graphs.py) | Day 1 fx smoke test（6/6 PASS） | ✅ |
-   | [scripts/extract_graphs.py](scripts/extract_graphs.py) | 图序列化到 `data/graphs/*.pkl` | ✅ |
-   | [scripts/end_to_end_smoke.py](scripts/end_to_end_smoke.py) | 8 阶段本地冒烟 | ✅ |
-   | [scripts/run_profiling.py](scripts/run_profiling.py) | profiling 驱动（idempotent + OOM-safe） | ✅ |
-   | [scripts/train_and_eval.py](scripts/train_and_eval.py) | 4 baseline 统一评估 | ✅ |
-   | README（含 reproducibility 指南） | | ⏳ Day 12-14 |
+| Split | Roofline | XGBoost | GNN (v2) | **Router** |
+|---|---:|---:|---:|---:|
+| **── RQ2 硬件外推 ──** (Router 100% → XGB) | | | | |
+| leave-gpu=h100 | 97.0 | **14.0** | 67.8 | **14.0** ← XGB |
+| zero-shot=h200 | 98.0 | **12.0** | 20.9 | **12.0** ← XGB |
+| zero-shot=b200 | 98.7 | **12.7** | 27.9 | **12.7** ← XGB |
+| **── RQ1 架构外推 ──** (Router 100% → GNN) | | | | |
+| leave-model=gpt2-small | 94.1 | 96.1 | **20.0** | **20.0** ← GNN |
+| leave-model=gpt2-medium | 91.5 | 53.4 | **22.0** | **22.0** ← GNN |
+| leave-model=gpt2-large | 88.7 | 39.4 | **25.6** | **25.6** ← GNN |
+| leave-model=bert-base | 97.2 | 125.9 | **21.2** | **21.2** ← GNN |
+| leave-model=bert-large | 96.0 | 50.8 | **31.0** | **31.0** ← GNN |
+| leave-model=t5-small | 98.8 | 59.7 | **33.0** | **33.0** ← GNN |
+| **── 混合 (per-sample 路由展示) ──** | | | | |
+| mixed=gpt2-small,gpt2-large | 92.2 | 63.2 | 46.0 | **39.9** 🏆 |
 
-3. **Profiling 数据集**：CSV 文件，V100 / T4 / A100 / A10 / L4 / H100 / H200 / B200 合计 **~2000 hero + 800 hold-out ≈ 2800 条**（扣除 OOM 后约 2200 可用样本）；含 `actual_gpu_name` / `attn_impl` / `kernel_backend` 等 schema 扩展列（见 [data_collection_plan.md §3.1](data_collection_plan.md)）
+**Hero**（poster 主结论）：
+> **Tabular methods (XGBoost) handle hardware extrapolation well (12-14% MAPE); graph-aware methods (GNN) handle architecture extrapolation well (20-33% MAPE). A two-tier SHAP-driven router achieves the best of both — and on a heterogeneous test set with mixed extrapolation regimes, the router (39.9%) strictly beats both XGBoost alone (63.2%) and the GNN alone (46.0%).**
 
-4. **训练模型**：最优代价模型 + 各消融变体（包括 per-node vs post-readout HW 融合）的保存权重
+**Mixed split 细节**（[results/mixed_split_router.json](results/mixed_split_router.json)）：
 
-5. **Pre-extracted graphs**：[data/graphs/*.pkl](data/graphs/) 已 committed，6 个模型的 `GraphRepr` pickle（~1 MB 总共）；同学 clone 即用，无需重跑 fx tracing
+- 训练：4 个模型（bert-base/bert-large/gpt2-medium/t5-small）× 80% configs × 7 GPUs = 987 样本
+- 测试：留出的 2 个模型（gpt2-small/gpt2-large）全量 + 4 个训练模型剩 20% configs = 916 样本
+- Router tier breakdown：73.3% 走 Tier 1（架构身份）→ GNN，26.7% 走 default → XGBoost，0% 走 Tier 2（SHAP feature OOD，因为 graph 聚合特征是图级常量，本数据集中不会触发——defense-in-depth 设计，写进 §Limitations）
 
-6. **实验脚本**：一键复现（见 `scripts/train_and_eval.py` 命令行）
+**Per-tier MAPE 拆解**（验证 Router 每一层的决策都是局部最优）：
 
-**Day 1-2 完成度**（2026-04-17 盘点）：三人 6/6 任务交付 ✅；pytest 22/22、smoke 6/6、end-to-end 8/8、`run_profiling.py` CPU dry-run、`train_and_eval.py` 四路对比，全部本地绿。等 Day 3 上 GPU 采真数据。
+| Subset | n | XGBoost | GNN | Router 选 | 是否选对 |
+|---|---:|---:|---:|---|---|
+| Tier 1（未见架构） | 671 | 82.42% | **50.50%** | GNN | ✅ GNN 胜 32 pts |
+| Default（分布内） | 245 | **10.70%** | 33.71% | XGBoost | ✅ XGBoost 胜 23 pts |
+
+> **这两行数据是 Router 设计的硬证据**：在每个子集上 Router 都选了**实际更好**的那个模型。Router 在 default 子集上把 GNN 33.71% 换成 XGB 10.70%，省下 23 个 MAPE 点 × 26.7% 占比 ≈ 6.1 点——正好等于整体 Router 39.85% vs GNN-alone 46.01% 的 6 点差距。
+
+### 3.2 Few-shot 曲线（B200，可选附录）
+
+| N | Roofline | XGBoost | **GNN (v2)** | v1 (历史) |
+|---|---:|---:|---:|---:|
+| 0 | 98.7 | 12.7 | 27.9 | 51.0 |
+| 50 | 98.8 | 8.3 | 22.9 | 44.5 |
+| 100 | 98.8 | 8.7 | 25.2 | **139** 💥 |
+| 200 | 98.7 | 5.6 | **9.7** | 37.8 |
+
+**关键**：v1 fs100 爆炸（139%）在 v2 修复（25.2%）；fs200 是首个 < 10% 的 v2 GNN 数字。
+
+### 3.3 V2 三开关 ablation（leave-model=gpt2-large）
+
+| 配置 | MAPE | 说明 |
+|---|---:|---|
+| **v2 三开关全开** | **25.6%** 🏆 | baseline |
+| 仅 node_level_sh | 82.8% | |
+| 仅 sum readout | 350.6% | 单开崩溃 |
+| 仅 global_skip | 40.4% | ≈ XGBoost |
+| 三开关全关（≈ v1） | 68.3% | |
+
+**结论**：**三个改动作为整体生效，单开任何一项都不够**。Table 3 caption 必须强调 synergy。
+
+---
+
+## 4. Poster 冲刺计划（最后 1 天）⭐
+
+### 4.1 战略选择回顾（2026-04-29 决定）
+
+| 路径 | 决策 |
+|---|---|
+| 残差混合（XGB+GNN delta） | ❌ 否决（作弊嫌疑） |
+| XGB 喂 GNN 当特征 | ❌ 否决（仍有叠加味） |
+| **Router + SHAP 诊断 + Demo** | ✅ **采纳** |
+| 重新跑训练 | ❌ 沿用现有 JSON 数据 |
+| 改 GNN 架构 | ❌ v2 已冻结 |
+
+### 4.2 任务拆解
+
+#### A. Router（backend，✅ 完成）
+
+**新文件**：[src/hetero_cost_model/router.py](src/hetero_cost_model/router.py) (~190 行)
+
+**两层 SHAP 驱动 OOD 路由**：
+
+```python
+# Tier 1: 架构身份 (metadata-cheap，部署时立即可查)
+if sample.model_name not in train.model_names:
+    return ("gnn", reason="unseen architecture")
+
+# Tier 2: SHAP 驱动的 feature OOD
+# 检查的特征不是手挑的，而是 SHAP 分析 XGBoost 后选出的：
+# log1p(total_flops), log1p(total_memory_bytes)
+# 这两个是 XGBoost 真正依赖的"架构区分特征"，OOD 时 XGB 必失败
+for feat in ARCHITECTURE_FEATURES:
+    if feat OOD vs train range:
+        return ("gnn", reason=f"{feat} OOD")
+
+# Default: 分布内 → 强 baseline 接管
+return ("xgboost", reason="in-distribution")
+```
+
+**为什么不只是 if-else**：
+
+- Tier 1 是 metadata 级别的快速通道
+- Tier 2 是 per-sample 特征级 OOD 检测，特征**由独立的 SHAP 分析决定**（不是凭空选）
+- 路由设计的"复杂度"在 **SHAP 反向 inform Router** 这个 evidence 链，不在 router 内部代码
+- 每个决策都有可解释的 `reason`（为 demo 和 poster 服务）
+
+**修改**：[scripts/train_and_eval.py](scripts/train_and_eval.py) 加 `run_router()`，复用已 fit 好的 xgb 和 trained gnn 的预测，并打印 tier breakdown 表。新增 `mixed=<m1,m2>` split。
+
+**验收（已通过）**：
+
+- 9 个外推 split 上 Router 数学上等于 GNN 或 XGBoost 列（确定性 by routing rule）
+- mixed split 上 Router 39.9% **严格优于** GNN 46.0% 和 XGBoost 63.2%（per-sample 路由真有价值）
+
+#### B. Demo / Extension（frontend，✅ 完成）
+
+**新文件**：[scripts/predict.py](scripts/predict.py) (~80 行 CLI)
+
+输入 / 输出契约：
+
+```bash
+# Case 1: 见过的模型 + 见过的 GPU
+$ python scripts/predict.py --model gpt2-large --batch 4 --seq 256 --gpu h100
+[Router] gpt2-large ∈ training set → use XGBoost (in-distribution)
+[Predicted latency] 23.4 ms
+[Reference (GNN, for comparison)] 28.9 ms
+
+# Case 2: 见过的模型 + 未见的 GPU（zero-shot）
+$ python scripts/predict.py --model bert-base --batch 8 --seq 128 --gpu b200
+[Router] b200 ∉ training GPUs → still use XGBoost (hardware extrapolation regime)
+[Predicted latency] 4.1 ms
+[Reference (GNN)] 6.3 ms
+
+# Case 3: 模拟未见架构（强制 GNN）
+$ python scripts/predict.py --model gpt2-large --batch 4 --seq 256 --gpu h100 \
+    --simulate-unseen-architecture
+[Router] (simulated) architecture treated as unseen → use GNN
+[Predicted latency] 28.9 ms (graph-aware, OOD-safe regime)
+[Caveat] In production this regime applies when deploying a new model architecture.
+```
+
+**Poster screenshot 用 case 1 + case 3 对比**——同样输入，Router 行为不同，输出不同。一眼看懂"路由器在干啥"。
+
+**实现要点**：
+
+- 加载现有 `data/graphs/*.pkl` 作为 model graph 字典
+- 加载 train fold 的 fitted XGBoost 和 trained GNN（可直接 pickle 缓存现有 train_and_eval 中间结果）
+- 调用 router → 调用对应模型 → 打印格式化输出
+
+**验收**：3 种 case 的命令都能跑出正确格式的输出，可截图。
+
+#### C. SHAP 诊断（✅ 完成）
+
+**新文件**：[scripts/shap_xgboost_diagnosis.py](scripts/shap_xgboost_diagnosis.py)（~165 行）
+**结果**：[results/SHAP_FINDINGS.md](results/SHAP_FINDINGS.md) + 2 张 PNG
+
+**实测发现**（held-out=gpt2-large，XGB MAPE 39.4%）：
+
+| Rank | Feature | mean &#124;SHAP&#124; | OOD on test? |
+|---|---|---:|---|
+| 1 | `seq_len` | 24.41 | 0% |
+| 2 | `batch_size` | 15.62 | 0% |
+| 3 | `fp16_tflops` | 15.59 | 0% |
+| **4** | **`log1p(total_memory_bytes)`** | **9.53** | **100%** ⚠️ |
+| 5 | `bandwidth_gbs` | 7.55 | 0% |
+
+**关键发现**（细化原假设）：
+
+- XGBoost 的 top 3 特征是 config + hardware（`seq_len` / `batch_size` / `fp16_tflops`），它们覆盖均匀，**不 OOD**
+- 第 4 名 `log1p(total_memory_bytes)` 是**唯一**架构区分特征——gpt2-large 在它上面 100% OOD（test [22, 22] vs train [18, 21]）
+- 这就是 XGBoost 在架构外推上失败的精确机制：架构识别全靠 graph 聚合量，而聚合量对未见架构必然 OOD
+
+**Poster §Diagnostic 框**（< 80 字 caption）：
+> XGBoost's decisions are dominated by config + hardware features (top 3 SHAP) that are well-covered in training. The only architecture-distinguishing feature in its top-5 — `log1p(total_memory_bytes)` — is **100% OOD** on the held-out gpt2-large set (test [22] vs train [18, 21]). Tree models cannot extrapolate beyond cell boundaries; graph-aware models avoid this via per-op decomposition.
+
+**SHAP 顺便驱动了 Router 设计**：Router Tier 2 检查的就是 SHAP 找出的这 2 个架构区分特征（`log1p(total_flops)` + `log1p(total_memory_bytes)`），不是手挑。
+
+#### D. Poster 文案重写（~2h）
+
+**Hero claim 替换**：
+
+- ❌ 旧："27.9% MAPE on B200 zero-shot"
+- ✅ 新："Two extrapolation axes, two regimes: tabular for hardware, graph-aware for architecture. Router achieves the best of both."
+
+**§Related Work 加一段**：
+> Recent graph-level cost models for LLM inference (NeuSight, ASPLOS'25; Habitat, MLSys'21) focus on cross-GPU generalization. Our work complements these by evaluating cross-architecture generalization within the Transformer family, characterizing when tabular feature representations break down.
+
+**§Limitations 必写 5 条**：
+
+1. **Scope 主动收缩**：CPU/GPU placement 和 ResNet 在 proposal 提及但本课程项目未实现，列入 future work
+2. **HF eager mode only**：未对比 torch.compile / vLLM / TensorRT-LLM 等 serving 栈
+3. **Forward-pass / prefill only**：autoregressive decode + KV cache 未覆盖
+4. **XGBoost feature representation**：我们对比的 XGBoost 用 4 维 graph feature；richer per-op-type histogram 未评估，但 SHAP 显示 dominant feature 仍是 aggregate magnitude，OOD 外推问题可能保留
+5. **架构外推范围**：仅 Transformer 家族内部（GPT2/BERT/T5 互留一作测试），不包括 ResNet / Mamba / MoE
+
+### 4.3 时间预算
+
+| 任务 | 估时 | 阻塞 |
+|---|---:|---|
+| A. Router 实现 | 2.0h | 无 |
+| B. Demo / predict.py CLI | 1.5h | A 完成后 |
+| C. SHAP 脚本 + 2 张图 | 1.5h | 无（与 A 并行） |
+| D. Poster 文案 + 主表 + screenshot | 2.0h | A/B/C 全部完成后 |
+| 整合 / 校对 | 1.0h | D 之后 |
+| **总计** | **8.0h** | buffer 4h |
+
+### 4.4 验收 checklist（poster ready）
+
+- [ ] Router 9 行 MAPE 数字齐全，主表挂上 poster
+- [ ] `predict.py` 至少 3 个 case 跑通，screenshot 截图入 poster
+- [ ] SHAP 2 张图生成 + < 80 字英文 caption
+- [ ] Hero claim 改为 "two extrapolation axes" 版本
+- [ ] §Related Work 加 NeuSight + Habitat 引用
+- [ ] §Limitations 写齐 5 条
+- [ ] poster 不出现 "GNN beats XGBoost" 字样
+- [ ] poster 出现 "complementary" / "regime" / "extrapolation axes" framing 词
+
+---
+
+## 5. 风险 & Fallback
+
+| 风险 | 概率 | 应对 |
+|---|---|---|
+| Router 跟 min(XGB, GNN) 没区别 → "这不就是 if-else" 质疑 | 高 | poster 上**主动承认** "rule is intentionally simple"；价值在系统化界定 regime，不在路由复杂度 |
+| `predict.py` 加载已训 GNN 时遇坑（state_dict 路径） | 中 | fallback：从 `train_and_eval.py` 跑一次 leave-model split，用 in-memory GNN 对象直接做 demo |
+| SHAP 在 XGBoost 上跑不动 | 极低 | 用 `xgboost.plot_importance` 或 sklearn `permutation_importance` 替代 |
+| 时间超预算 | 中 | 砍 demo case 3（保留 case 1 + 2）；砍 SHAP 第 2 张图（保 1 张 + 文字） |
+| 陈天奇追问 "你们 XGB feature 太弱" | 高 | §Limitations 第 4 条 + SHAP 诊断已主动覆盖；回答 "agreed, this is a representation limitation we explicitly characterize" |
+| 陈天奇追问 "你们没测 ResNet/Mamba" | 中 | "scope 限制，写在 §Limitations，future work 第 1 项" |
+
+---
+
+## 6. 最终交付物
+
+### 6.1 Poster（PDF）
+
+包含：
+
+- Title + 三人作者
+- Hero claim（"two extrapolation axes" 版本）
+- 主表（Extrapolation Results，9 行 × 4 method）
+- Demo screenshot（`predict.py` 3 个 case）
+- SHAP 诊断（1-2 张图 + caption）
+- Related Work（NeuSight + Habitat + Ansor）
+- Limitations（5 条）
+
+### 6.2 代码库（GitHub）
+
+| 路径 | 角色 | 状态 |
+|---|---|---|
+| [src/hetero_cost_model/](src/hetero_cost_model/) | 全部已有 | ✅ |
+| [src/hetero_cost_model/router.py](src/hetero_cost_model/router.py) | Router | 🔴 sprint 新增 |
+| [scripts/train_and_eval.py](scripts/train_and_eval.py) | 已有 + 加 router | ⚠️ 修改 |
+| [scripts/predict.py](scripts/predict.py) | Demo CLI | 🔴 sprint 新增 |
+| [scripts/shap_xgboost_diagnosis.py](scripts/shap_xgboost_diagnosis.py) | SHAP | 🔴 sprint 新增 |
+| README（含一键复现 + demo 用法） | | 🔴 sprint 完善 |
+
+### 6.3 数据集 + 训练产物（已 committed）
+
+- `data/raw/*.csv` — 7 GPU × 6 模型 × 48 配置 = 1903 样本
+- `data/graphs/*.pkl` — 6 模型 GraphRepr pickle
+- `results/*.json` — 16 轮 Phase 6 sweep 全部 prediction + metrics
+
+---
+
+## 7. 历史时间线（参考）
+
+详细 day-by-day 任务、Modal SKU lock、踩坑记录等见 git history (commits before 2026-04-18) 与 [results/EXPERIMENTS.md](results/EXPERIMENTS.md) Phase 1-6。
+
+**关键里程碑**：
+
+- 2026-04-17：Day 1-2 全绿，6 模型图提取通过（HF fx + transformers<4.52）
+- 2026-04-17：7 GPU 数据采集完成（1903 样本）
+- 2026-04-17：v1 → v2 GNN 重设计（per-node s/h + sum readout + global skip）
+- 2026-04-18：16 轮 Phase 6 sweep 跑完，三张表数字齐备
+- 2026-04-29：poster 冲刺（Router + SHAP + Demo）启动
+- 2026-04-30：poster 截止
