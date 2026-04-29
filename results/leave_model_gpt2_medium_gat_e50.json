@@ -8,38 +8,44 @@
   "metrics": [
     {
       "method": "Roofline",
-      "mape": 91.49,
-      "spearman": 0.66,
+      "mape": 91.37,
+      "spearman": 0.638,
       "top1": 0.0
     },
     {
       "method": "Per-graph mean",
-      "mape": 110.38,
-      "spearman": 0.656,
+      "mape": 104.55,
+      "spearman": 0.58,
       "top1": 0.0
     },
     {
       "method": "Pooled MLP",
-      "mape": 70.65,
-      "spearman": 0.888,
+      "mape": 48.56,
+      "spearman": 0.872,
       "top1": 0.0
     },
     {
       "method": "XGBoost",
-      "mape": 53.44,
-      "spearman": 0.984,
+      "mape": 53.14,
+      "spearman": 0.97,
       "top1": 0.0
     },
     {
       "method": "Per-kernel MLP",
-      "mape": 1093.5,
-      "spearman": 0.656,
+      "mape": 488.41,
+      "spearman": 0.861,
       "top1": 0.0
     },
     {
       "method": "GNN (gat)",
-      "mape": 21.96,
-      "spearman": 0.937,
+      "mape": 25.53,
+      "spearman": 0.885,
+      "top1": 0.0
+    },
+    {
+      "method": "Router",
+      "mape": 25.53,
+      "spearman": 0.885,
       "top1": 0.0
     }
   ],

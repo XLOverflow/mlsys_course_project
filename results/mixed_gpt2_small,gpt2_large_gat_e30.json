@@ -1,6 +1,6 @@
 {
-  "split": "leave-model=t5-small",
-  "epochs": 50,
+  "split": "mixed=gpt2-small,gpt2-large",
+  "epochs": 30,
   "backbone": "gat",
   "constant_h": false,
   "few_shot_samples": 0,
@@ -8,46 +8,46 @@
   "metrics": [
     {
       "method": "Roofline",
-      "mape": 98.83,
-      "spearman": 0.745,
+      "mape": 92.2,
+      "spearman": 0.705,
       "top1": 0.0
     },
     {
       "method": "Per-graph mean",
-      "mape": 138.65,
-      "spearman": 0.684,
+      "mape": 141.08,
+      "spearman": 0.465,
       "top1": 0.0
     },
     {
       "method": "Pooled MLP",
-      "mape": 60.77,
-      "spearman": 0.677,
+      "mape": 218.49,
+      "spearman": 0.708,
       "top1": 0.0
     },
     {
       "method": "XGBoost",
-      "mape": 59.93,
-      "spearman": 0.865,
-      "top1": 0.0
+      "mape": 62.03,
+      "spearman": 0.753,
+      "top1": 1.0
     },
     {
       "method": "Per-kernel MLP",
-      "mape": 108.76,
-      "spearman": 0.481,
+      "mape": 204.07,
+      "spearman": 0.859,
       "top1": 0.0
     },
     {
       "method": "GNN (gat)",
-      "mape": 48.7,
-      "spearman": 0.828,
+      "mape": 59.13,
+      "spearman": 0.861,
       "top1": 0.0
     },
     {
       "method": "Router",
-      "mape": 48.7,
-      "spearman": 0.828,
-      "top1": 0.0
+      "mape": 52.34,
+      "spearman": 0.888,
+      "top1": 1.0
     }
   ],
-  "raw_log_path": "/results/leave_model_t5_small_gat_e50.json.log"
+  "raw_log_path": "/results/mixed_gpt2_small,gpt2_large_gat_e30.json.log"
 }

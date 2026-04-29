@@ -123,14 +123,9 @@ _VOLUME_MOUNT = {"/csvs": CSV_VOLUME}
 _PREEMPT_RETRIES = modal.Retries(max_retries=10, backoff_coefficient=1.0, initial_delay=0.0)
 
 
-@app.function(gpu="T4", timeout=7200, volumes=_VOLUME_MOUNT, retries=_PREEMPT_RETRIES)
-def profile_t4(
-    models: list[str], batch_sizes: list[int], seq_lens: list[int],
-    warmup: int, runs: int, out_basename: str | None = None,
-    mode: str = "prefill",
-) -> bytes:
-    return _run_profiling("t4", models, batch_sizes, seq_lens, warmup, runs, out_basename, mode)
-
+# T4 dropped from the project: Modal worker stability issues (silent stalls
+# during prefill, container-startup hangs during decode) made it unreliable
+# across data-collection passes.
 
 @app.function(gpu="L4", timeout=3600, volumes=_VOLUME_MOUNT, retries=_PREEMPT_RETRIES)
 def profile_l4(
@@ -169,14 +164,10 @@ def profile_h100(
     return _run_profiling("h100", models, batch_sizes, seq_lens, warmup, runs, out_basename, mode)
 
 
-@app.function(gpu="H200", timeout=3600, volumes=_VOLUME_MOUNT, retries=_PREEMPT_RETRIES)
-def profile_h200(
-    models: list[str], batch_sizes: list[int], seq_lens: list[int],
-    warmup: int, runs: int, out_basename: str | None = None,
-    mode: str = "prefill",
-) -> bytes:
-    return _run_profiling("h200", models, batch_sizes, seq_lens, warmup, runs, out_basename, mode)
-
+# H200 dropped from the project: gpt2-large decode showed an anomalous
+# slowdown (25 ms vs H100's 16 ms) despite more memory bandwidth — likely a
+# Hopper+ kernel dispatch quirk we did not investigate. To keep the dataset
+# physically clean, H200 is excluded from cost-model training and evaluation.
 
 @app.function(gpu="B200", timeout=3600, volumes=_VOLUME_MOUNT, retries=_PREEMPT_RETRIES)
 def profile_b200(
@@ -223,12 +214,10 @@ def main(
     sl_list = [int(x) for x in seq_lens.split(",")]
 
     dispatchers = {
-        "t4": profile_t4,
         "l4": profile_l4,
         "a10": profile_a10,
         "a100-40gb": profile_a100_40gb,
         "h100": profile_h100,
-        "h200": profile_h200,
         "b200": profile_b200,
     }
     if gpu_sku not in dispatchers:

@@ -2,7 +2,7 @@
 
 ``actual_gpu_name`` / ``actual_mem_gb`` / ``actual_sm_count`` guard against
 Modal silently upgrading SKUs (``gpu="A100"`` may land on A100-80GB; ``H100``
-on H200). When loading the training CSV we look hardware up by
+on B200). When loading the training CSV we look hardware up by
 ``actual_gpu_name`` rather than the declared ``gpu`` label.
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ class RuntimeGPUInfo:
     actual_gpu_name: str    # e.g. "NVIDIA A100-SXM4-40GB"
     actual_mem_gb: float    # from torch.cuda.get_device_properties().total_memory
     actual_sm_count: int    # streaming multiprocessor count
-    registry_key: str       # canonical key: v100/a100/h100/h200/b200, "" if unknown
+    registry_key: str       # canonical key: v100/a10/a100/b200/h100/l4, "" if unknown
     cuda_version: str       # torch.version.cuda (may be "" on CPU)
     driver_version: str     # nvidia-smi driver version (best-effort)
     torch_version: str
@@ -69,20 +69,18 @@ def current_gpu_info() -> RuntimeGPUInfo:
 # reflect A10G since that's what Modal actually schedules.
 _REGISTRY_PATTERNS = [
     (re.compile(r"\bB200\b",   re.IGNORECASE), "b200"),
-    (re.compile(r"\bH200\b",   re.IGNORECASE), "h200"),
     (re.compile(r"\bH100\b",   re.IGNORECASE), "h100"),
     (re.compile(r"\bA100\b",   re.IGNORECASE), "a100"),
     (re.compile(r"\bA10G?\b",  re.IGNORECASE), "a10"),   # matches A10 and A10G
     (re.compile(r"\bL4\b",     re.IGNORECASE), "l4"),
-    (re.compile(r"\bT4\b",     re.IGNORECASE), "t4"),
-    (re.compile(r"\bV100\b",   re.IGNORECASE), "v100"),
+    (re.compile(r"\bV100\b",   re.IGNORECASE), "v100"),  # registered but unused
 ]
 
 
 def gpu_name_to_registry_key(device_name: str) -> str:
     """Map ``torch.cuda.get_device_name()`` to our ``HARDWARE_REGISTRY`` key.
 
-    Returns ``""`` if the device isn't one of V100/A100/H100/H200/B200.
+    Returns ``""`` if the device isn't one of V100/A10/A100/B200/H100/L4.
     Callers should treat empty string as "data row must be discarded" —
     it signals Modal gave us an unexpected SKU or we're on a dev GPU.
     """
