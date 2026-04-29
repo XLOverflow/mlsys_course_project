@@ -105,7 +105,7 @@ def main() -> int:
             f"Training will dispatch by actual_gpu_name; declared label is for bookkeeping only."
         )
 
-    configs = _config_grid(specs, args.batch_sizes, args.seq_lens)
+    configs = _config_grid(specs, args.batch_sizes, args.seq_lens, mode=args.mode)
     print(f"\nConfig grid: {len(configs)} total points "
           f"({len(specs)} models × {len(args.batch_sizes)} batches × {len(args.seq_lens)} seqs)")
 
@@ -301,18 +301,27 @@ def _resolve_spec(name: str) -> ModelSpec:
 
 def _config_grid(
     specs: Iterable[ModelSpec], batch_sizes: List[int], seq_lens: List[int],
+    *, mode: str = "prefill",
 ) -> List[Tuple[ModelSpec, int, int]]:
     """Cartesian product, with one filter: skip seqs that exceed the model's
     architectural max. Those failures are model-capability limits (e.g. BERT's
     max_position_embeddings=512), not hardware feasibility — they'd appear in
     the CSV as NaN rows indistinguishable from real OOMs, contaminating any
-    future feasibility head we train on those labels."""
+    future feasibility head we train on those labels.
+
+    In decode mode the threshold is *strict*: the prompt occupies seq_len
+    positions, and the decode step generates one more token, so a prompt at
+    exactly max_seq_len would push the next token past max_position_embeddings
+    and trigger a CUDA device-side assert (corrupting the entire context for
+    the rest of the run)."""
     grid: List[Tuple[ModelSpec, int, int]] = []
     skipped = 0
     for spec in specs:
+        # decode needs room for one more position; use < instead of >.
+        max_allowed = spec.max_seq_len - 1 if mode == "decode" else spec.max_seq_len
         for bs in batch_sizes:
             for sl in seq_lens:
-                if sl > spec.max_seq_len:
+                if sl > max_allowed:
                     skipped += 1
                     continue
                 grid.append((spec, bs, sl))
