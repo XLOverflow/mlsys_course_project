@@ -97,7 +97,7 @@
 
 ### 3.1 主表 Extrapolation Results（poster Table 1，MAPE %）
 
-> 数据范围：**5 GPUs**（A10 / A100 / B200 / H100 / L4，跨 4 代架构 Ampere → Ada → Hopper → Blackwell）。T4 (Turing) 和 H200 (Hopper+) 已从最终数据集剔除（T4 Modal 稳定性问题贯穿 prefill 和 decode 收集，H200 在 gpt2-large decode 上有 unresolved 反常）。Prefill 1360 样本 + Decode 600 样本，分目录存放（`data/raw/*.csv` 和 `data/raw/decode/*.csv`），训练时不混。
+> 数据范围：**5 GPUs**（A10 / A100 / B200 / H100 / L4，跨 4 代架构 Ampere → Ada → Hopper → Blackwell）。Prefill 1360 样本 + Decode 600 样本，分目录存放（`data/raw/*.csv` 和 `data/raw/decode/*.csv`），训练时不混。
 
 | Split | Roofline | XGBoost | GNN (v2) | **Router** |
 |---|---:|---:|---:|---:|

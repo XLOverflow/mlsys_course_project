@@ -1,5 +1,5 @@
 {
-  "split": "leave-gpu=h100",
+  "split": "leave-gpu=b200",
   "epochs": 50,
   "backbone": "gat",
   "constant_h": false,
@@ -8,46 +8,46 @@
   "metrics": [
     {
       "method": "Roofline",
-      "mape": 97.01,
-      "spearman": 0.573,
+      "mape": 98.73,
+      "spearman": 0.556,
       "top1": 0.0
     },
     {
       "method": "Per-graph mean",
-      "mape": 372.26,
-      "spearman": 0.74,
+      "mape": 370.93,
+      "spearman": 0.806,
       "top1": 0.0
     },
     {
       "method": "Pooled MLP",
-      "mape": 139.53,
-      "spearman": 0.675,
+      "mape": 93.19,
+      "spearman": 0.183,
       "top1": 0.0
     },
     {
       "method": "XGBoost",
-      "mape": 99.95,
-      "spearman": 0.961,
+      "mape": 15.97,
+      "spearman": 0.956,
       "top1": 0.0
     },
     {
       "method": "Per-kernel MLP",
-      "mape": 363.27,
-      "spearman": 0.268,
+      "mape": 905.91,
+      "spearman": -0.155,
       "top1": 0.0
     },
     {
       "method": "GNN (gat)",
-      "mape": 46.35,
-      "spearman": 0.836,
+      "mape": 38.3,
+      "spearman": 0.717,
       "top1": 0.0
     },
     {
       "method": "Router",
-      "mape": 99.95,
-      "spearman": 0.961,
+      "mape": 15.97,
+      "spearman": 0.956,
       "top1": 0.0
     }
   ],
-  "raw_log_path": "/results/leave_gpu_h100_gat_e50.json.log"
+  "raw_log_path": "/results/leave_gpu_b200_gat_e50.json.log"
 }

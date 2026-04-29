@@ -37,7 +37,7 @@ from hetero_cost_model.baselines import (
     roofline_latency,
 )
 from hetero_cost_model.data import LatencyDataset, Sample, load_samples_from_csv
-from hetero_cost_model.metrics import mape, spearman, top_k_accuracy
+from hetero_cost_model.metrics import grouped_top_k_accuracy, mape, spearman, top_k_accuracy
 from hetero_cost_model.models.gnn import CostModel
 from hetero_cost_model.models.mlp import MLPCostModel
 from hetero_cost_model.router import RouteResult, routed_predictions, tier_breakdown
@@ -525,6 +525,24 @@ def main() -> int:
         mape_str = f"{r.mape * 100:.2f}%" if not math.isnan(r.mape) else "nan"
         print(f"{r.name:<18}  {mape_str:>8}  {r.spearman:>10.3f}  {r.top1:>8.3f}")
     print("-" * 72)
+
+    # RQ3 — Decision effectiveness: within each (model, batch, seq) group
+    # the candidate set is the held-out GPUs. "GPU selection top-1" =
+    # fraction of (model, batch, seq) groups where the predictor's
+    # fastest GPU is also the actual fastest GPU. Operationalizes the
+    # proposal's RQ3 ("rank candidate strategies and select near-optimal
+    # without exhaustive profiling") at the granularity of GPU choice.
+    gpu_groups = [(s.model_name, s.config.batch_size, s.config.seq_len) for s in te]
+    print("\nRQ3: GPU-selection accuracy (per-(model,batch,seq) groups, "
+          f"{len(set(gpu_groups))} groups):")
+    print(f"  {'Method':<18}  {'top-1':>6}  {'top-2':>6}")
+    for r in reports:
+        t1 = grouped_top_k_accuracy(r.pred, r.true, gpu_groups, k=1)
+        t2 = grouped_top_k_accuracy(r.pred, r.true, gpu_groups, k=2)
+        t1s = f"{t1:.3f}" if not math.isnan(t1) else "n/a"
+        t2s = f"{t2:.3f}" if not math.isnan(t2) else "n/a"
+        print(f"  {r.name:<18}  {t1s:>6}  {t2s:>6}")
+    print()
 
     # Router tier breakdown — shows how many samples each tier caught.
     counts = tier_breakdown(route_decisions)
