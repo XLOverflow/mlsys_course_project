@@ -40,6 +40,7 @@ from hetero_cost_model.data import LatencyDataset, Sample, load_samples_from_csv
 from hetero_cost_model.metrics import mape, spearman, top_k_accuracy
 from hetero_cost_model.models.gnn import CostModel
 from hetero_cost_model.models.mlp import MLPCostModel
+from hetero_cost_model.router import RouteResult, routed_predictions, tier_breakdown
 from hetero_cost_model.training import TrainConfig, predict, train
 
 
@@ -52,7 +53,8 @@ def parse_args() -> argparse.Namespace:
                         "a directory (all *.csv under it are loaded).")
     p.add_argument("--graph-dir", type=Path, default=Path("data/graphs"))
     p.add_argument("--split", default="random",
-                   help="random | leave-gpu=<key> | leave-model=<name> | zero-shot=<key>")
+                   help="random | leave-gpu=<key> | leave-model=<name> | "
+                        "zero-shot=<key> | mixed=<model1,model2,...>")
     p.add_argument("--epochs", type=int, default=50)
     p.add_argument("--batch-size", type=int, default=32)
     p.add_argument("--lr", type=float, default=1e-3)
@@ -237,6 +239,47 @@ def make_split(samples: List[Sample], spec: str, seed: int) -> Split:
         te = [s for s in samples if s.hardware.name.lower() == held.lower()]
         return tr, te
 
+    if spec.startswith("mixed="):
+        # Heterogeneous test set that exercises per-sample routing.
+        #
+        #   Train fold = (samples from "trained" models) × 80% of (model, batch,
+        #                seq) tuples
+        #   Test fold  = (samples from "held-out" models, all configs)
+        #              ∪ (samples from "trained" models, the held-out 20%)
+        #
+        # Held-out tuples are sampled with the same RNG seed as the rest of the
+        # script so the split is reproducible. The seen-vs-unseen architecture
+        # mix in the test set is the whole point: it forces the router to make
+        # per-sample decisions that aren't all-GNN or all-XGBoost.
+        held_models_str = spec.split("=", 1)[1]
+        held_models = {m.strip() for m in held_models_str.split(",") if m.strip()}
+        if not held_models:
+            raise ValueError("mixed=<model1,model2,...> requires at least one model")
+        all_models = {s.model_name for s in samples}
+        unknown = held_models - all_models
+        if unknown:
+            raise ValueError(f"mixed: unknown model(s): {unknown}; "
+                             f"available: {sorted(all_models)}")
+
+        unseen = [s for s in samples if s.model_name in held_models]
+        trained = [s for s in samples if s.model_name not in held_models]
+
+        # Hold out 20% of the (model, batch, seq) tuples for trained models,
+        # so test set has both unseen-architecture and held-out-config samples.
+        rng = np.random.default_rng(seed)
+        tuples = sorted({(s.model_name, s.config.batch_size, s.config.seq_len)
+                         for s in trained})
+        cut = int(0.2 * len(tuples))
+        held_tuple_ix = set(int(i) for i in rng.permutation(len(tuples))[:cut])
+        held_tuples = {tuples[i] for i in held_tuple_ix}
+
+        tr = [s for s in trained
+              if (s.model_name, s.config.batch_size, s.config.seq_len) not in held_tuples]
+        te_held_config = [s for s in trained
+                          if (s.model_name, s.config.batch_size, s.config.seq_len) in held_tuples]
+        te = unseen + te_held_config
+        return tr, te
+
     raise ValueError(f"unknown split: {spec}")
 
 
@@ -338,6 +381,29 @@ def run_roofline(test_samples: Sequence[Sample]) -> Report:
     return Report("Roofline", pred, true)
 
 
+def run_router(
+    train_samples: Sequence[Sample], test_samples: Sequence[Sample],
+    xgb_pred: Sequence[float], gnn_pred: Sequence[float],
+) -> Tuple[Report, "List[RouteResult]"]:
+    """Two-tier SHAP-driven router.
+
+    Tier 1 catches architecture extrapolation via metadata
+    (``model_name`` ∉ training fold). Tier 2 catches feature-OOD on the
+    SHAP-identified architecture-distinguishing features
+    (``log1p(total_flops)``, ``log1p(total_memory_bytes)``). Otherwise
+    defaults to XGBoost.
+
+    Reuses XGB/GNN predictions already produced upstream — no model
+    re-invocation. Returns the :class:`Report` plus the per-sample
+    :class:`RouteResult` list for downstream tier breakdown.
+    """
+    pred_arr, decisions = routed_predictions(
+        test_samples, train_samples, xgb_pred, gnn_pred,
+    )
+    true = [s.latency_ms for s in test_samples]
+    return Report("Router", pred_arr.tolist(), true), decisions
+
+
 # --- Main --------------------------------------------------------------------
 
 def _read_noisy_flags(csv_paths: Sequence[Path]) -> Dict[tuple, bool]:
@@ -435,18 +501,22 @@ def main() -> int:
     reports.append(run_pooled_mlp(
         tr, te, cfg, global_skip=bool(args.ablation_global_skip),
     ))
-    reports.append(run_xgboost(tr, te))
+    xgb_report = run_xgboost(tr, te)
+    reports.append(xgb_report)
     reports.append(run_per_kernel_mlp(
         tr, te, cfg, hidden_dim=args.hidden_dim, dropout=args.dropout,
         global_skip=bool(args.ablation_global_skip),
     ))
-    reports.append(run_gnn(
+    gnn_report = run_gnn(
         tr, te, args.backbone, cfg,
         hidden_dim=args.hidden_dim, num_layers=args.num_layers, dropout=args.dropout,
         node_level_sh=bool(args.gnn_node_level_sh),
         readout=args.gnn_readout,
         global_skip=bool(args.gnn_global_skip),
-    ))
+    )
+    reports.append(gnn_report)
+    router_report, route_decisions = run_router(tr, te, xgb_report.pred, gnn_report.pred)
+    reports.append(router_report)
 
     print("\n" + "-" * 72)
     print(f"{'Method':<18}  {'MAPE':>8}  {'Spearman':>10}  {'Top-1':>8}")
@@ -455,6 +525,53 @@ def main() -> int:
         mape_str = f"{r.mape * 100:.2f}%" if not math.isnan(r.mape) else "nan"
         print(f"{r.name:<18}  {mape_str:>8}  {r.spearman:>10.3f}  {r.top1:>8.3f}")
     print("-" * 72)
+
+    # Router tier breakdown — shows how many samples each tier caught.
+    counts = tier_breakdown(route_decisions)
+    n = len(route_decisions)
+    print("\nRouter tier breakdown (per-sample routing decisions):")
+    print(f"  tier1 (architecture identity)        : "
+          f"{counts['tier1']:4d}  ({100 * counts['tier1'] / n:5.1f}%) → GNN")
+    print(f"  tier2 (SHAP feature OOD)             : "
+          f"{counts['tier2']:4d}  ({100 * counts['tier2'] / n:5.1f}%) → GNN")
+    print(f"  default (in distribution)            : "
+          f"{counts['default']:4d}  ({100 * counts['default'] / n:5.1f}%) → XGBoost")
+
+    # Per-tier MAPE — shows on each subset whether the routed model is
+    # actually the better choice. Validates the "GNN-weak ↔ Router uses XGB"
+    # hypothesis with concrete numbers.
+    xgb_pred_arr = np.asarray(xgb_report.pred, dtype=np.float64)
+    gnn_pred_arr = np.asarray(gnn_report.pred, dtype=np.float64)
+    true_arr = np.asarray(xgb_report.true, dtype=np.float64)
+
+    def _mape_subset(pred: np.ndarray, mask: np.ndarray) -> float:
+        if mask.sum() == 0:
+            return float("nan")
+        return float(np.mean(np.abs((pred[mask] - true_arr[mask]) / true_arr[mask])))
+
+    tier_masks = {
+        "tier1":   np.array([d.tier.value == "tier1"   for d in route_decisions]),
+        "tier2":   np.array([d.tier.value == "tier2"   for d in route_decisions]),
+        "default": np.array([d.tier.value == "default" for d in route_decisions]),
+    }
+    print("\nPer-tier MAPE breakdown (validates routing decisions):")
+    print(f"  {'subset':<32}  {'n':>4}  {'XGBoost':>8}  {'GNN':>8}  {'Router uses':<12}  {'Right?':<6}")
+    for tier_name, mask in tier_masks.items():
+        if mask.sum() == 0:
+            continue
+        xgb_m = _mape_subset(xgb_pred_arr, mask)
+        gnn_m = _mape_subset(gnn_pred_arr, mask)
+        uses = "GNN" if tier_name in ("tier1", "tier2") else "XGBoost"
+        better = "XGBoost" if xgb_m < gnn_m else "GNN"
+        right_choice = "✓" if better == uses else "✗"
+        label = {
+            "tier1":   "tier1: unseen architecture",
+            "tier2":   "tier2: SHAP feature OOD",
+            "default": "default: in distribution",
+        }[tier_name]
+        print(f"  {label:<32}  {int(mask.sum()):>4}  "
+              f"{xgb_m * 100:>7.2f}%  {gnn_m * 100:>7.2f}%  {uses:<12}  {right_choice:<6}")
+
     print("\nDecision rules (plan §5.2):")
     print("  GNN > Pooled MLP + Per-graph mean + Roofline  → C1 holds")
     print("  GNN − Per-kernel MLP gap ≥ 3 pts              → graph structure (C3)")
