@@ -29,7 +29,7 @@ from typing import Dict, Iterable, List, Set, Tuple
 import torch
 
 from hetero_cost_model.model_zoo import MODEL_BY_NAME, ModelSpec, load_model
-from hetero_cost_model.profiling import profile_callable
+from hetero_cost_model.profiling import profile_callable, time_decode_step
 from hetero_cost_model.runtime_info import current_gpu_info
 
 
@@ -44,6 +44,11 @@ CSV_COLUMNS: List[str] = [
     "actual_gpu_name", "actual_mem_gb", "actual_sm_count",
     # Settings
     "attn_impl",
+    # Profiling mode — "prefill" (full forward over prompt, default) or
+    # "decode" (single-token forward with KV cache, per-token decode latency).
+    # Added on the decode-exploration branch; rows from older runs default to
+    # "prefill" when this column is missing on read.
+    "mode",
     # Environment provenance
     "platform", "cuda_version", "driver_version", "torch_version", "timestamp",
 ]
@@ -66,6 +71,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--warmup", type=int, default=50)
     p.add_argument("--runs", type=int, default=100)
     p.add_argument("--device", default="cuda:0", help="PyTorch device string")
+    p.add_argument("--mode", choices=["prefill", "decode"], default="prefill",
+                   help="prefill: full forward over prompt (default, original "
+                        "protocol). decode: single-token forward with KV cache "
+                        "(per-token autoregressive decode latency). Encoder-only "
+                        "models are skipped in decode mode.")
     p.add_argument("--force", action="store_true",
                    help="Re-profile configs that already have rows in --output")
     return p.parse_args()
@@ -107,13 +117,14 @@ def main() -> int:
 
     try:
         for spec, bs, sl in configs:
-            key = (spec.name, bs, sl, gpu_info.actual_gpu_name)
+            key = (spec.name, bs, sl, gpu_info.actual_gpu_name, args.mode)
             if key in done:
                 continue
             row = _profile_one(
                 spec, bs, sl, device,
                 gpu_label=args.gpu, gpu_info=gpu_info,
                 warmup=args.warmup, runs=args.runs,
+                mode=args.mode,
             )
             writer.write(row)
     finally:
@@ -128,10 +139,23 @@ def main() -> int:
 def _profile_one(
     spec: ModelSpec, batch_size: int, seq_len: int, device: str,
     *, gpu_label: str, gpu_info, warmup: int, runs: int,
+    mode: str = "prefill",
 ) -> Dict[str, object]:
-    tag = f"{spec.name} bs={batch_size} sl={seq_len}"
+    tag = f"{spec.name} bs={batch_size} sl={seq_len} mode={mode}"
     print(f"[...] {tag}")
     base = _base_row(spec, batch_size, seq_len, gpu_label, gpu_info)
+    base["mode"] = mode
+
+    # Decode mode is only meaningful for autoregressive models (decoder
+    # and encoder-decoder). Encoder-only models skip cleanly.
+    if mode == "decode" and spec.family == "encoder":
+        print(f"[SKIP] {tag} encoder-only model has no autoregressive decode")
+        return {**base, "n_runs": 0, "noisy": False, "peak_memory_mb": float("nan")}
+    if mode == "decode" and spec.family == "enc-dec":
+        # T5 decode-step requires distinct plumbing (decoder_input_ids +
+        # cached encoder cross-attention). Left as TODO on this branch.
+        print(f"[SKIP] {tag} enc-dec decode plumbing not implemented yet (TODO)")
+        return {**base, "n_runs": 0, "noisy": False, "peak_memory_mb": float("nan")}
 
     try:
         model = load_model(spec).to(device).half().eval()
@@ -149,11 +173,17 @@ def _profile_one(
     try:
         torch.cuda.reset_peak_memory_stats() if device.startswith("cuda") else None
 
-        def step() -> None:
-            with torch.inference_mode():
-                model(input_ids, **extra)
+        if mode == "prefill":
+            def step() -> None:
+                with torch.inference_mode():
+                    model(input_ids, **extra)
+            result = profile_callable(step, warmup=warmup, runs=runs, device=device)
+        else:  # mode == "decode"
+            result = time_decode_step(
+                model, input_ids, extra=extra,
+                warmup=warmup, runs=runs, device=device,
+            )
 
-        result = profile_callable(step, warmup=warmup, runs=runs, device=device)
         peak_mem_mb = (
             torch.cuda.max_memory_allocated() / 1e6 if device.startswith("cuda") else 0.0
         )
@@ -215,11 +245,17 @@ def _base_row(
 
 # --- CSV helpers (idempotent append) -----------------------------------------
 
-def _existing_rows(path: Path) -> Set[Tuple[str, int, int, str]]:
-    """Rows already in the CSV, keyed by (model, bs, sl, actual_gpu_name)."""
+def _existing_rows(path: Path) -> Set[Tuple[str, int, int, str, str]]:
+    """Rows already in the CSV, keyed by (model, bs, sl, actual_gpu_name, mode).
+
+    ``mode`` is part of the key so prefill and decode rows for the same
+    (model, config, gpu) can coexist in the same CSV without a second
+    run skipping them. Older rows lacking the ``mode`` column default
+    to ``"prefill"`` (the original protocol).
+    """
     if not path.exists():
         return set()
-    done: Set[Tuple[str, int, int, str]] = set()
+    done: Set[Tuple[str, int, int, str, str]] = set()
     with open(path) as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -229,6 +265,7 @@ def _existing_rows(path: Path) -> Set[Tuple[str, int, int, str]]:
                     int(row["batch_size"]),
                     int(row["seq_len"]),
                     row["actual_gpu_name"],
+                    row.get("mode", "") or "prefill",
                 ))
             except (KeyError, ValueError):
                 continue

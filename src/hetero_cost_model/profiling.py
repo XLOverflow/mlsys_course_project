@@ -134,4 +134,74 @@ def _summarize(samples: List[float]) -> ProfileResult:
     return ProfileResult(mean, std, p50, p95, n)
 
 
-__all__ = ["ProfileResult", "profile_callable"]
+def time_decode_step(
+    model,
+    input_ids,
+    *,
+    extra: Optional[dict] = None,
+    warmup: int = 50,
+    runs: int = 100,
+    device: Optional[str] = None,
+) -> ProfileResult:
+    """Profile a single autoregressive decode step (one-token forward + KV cache).
+
+    The protocol mirrors steady-state autoregressive decoding inside HF
+    ``generate()``: run prefill once over ``input_ids`` to warm the KV
+    cache, then time repeated single-token forwards that *consume* the
+    cache without growing it. Each timed call simulates "produce token
+    i+1 given a cache of size i" at a fixed cache size, which is what
+    serving-side cost models actually consume.
+
+    Only applies to decoder-only and encoder-decoder models. Encoder-only
+    models (BERT family) have no autoregressive decode and are rejected
+    by the caller, not here.
+
+    Parameters
+    ----------
+    model
+        A loaded HuggingFace model with ``use_cache=True`` support.
+    input_ids
+        Prompt tokens [batch, seq_len]. Used once for prefill to populate
+        the KV cache.
+    extra
+        Optional kwargs passed both to the prefill call and to each
+        decode-step call (e.g. ``decoder_input_ids`` for encoder-decoder
+        models is set automatically inside this function based on the
+        prefill output).
+
+    Returns
+    -------
+    :class:`ProfileResult` summarizing per-token decode latency. The
+    measurement excludes prefill cost.
+    """
+    extra = dict(extra or {})
+
+    # --- Prefill once to populate KV cache --------------------------------
+    with torch.inference_mode():
+        out = model(input_ids, use_cache=True, **extra)
+    past = getattr(out, "past_key_values", None)
+    if past is None:
+        raise RuntimeError(
+            "model returned no past_key_values; this model probably does "
+            "not support KV-cache decoding (encoder-only?)."
+        )
+
+    # Last token in the prompt becomes the "new token" the decode step
+    # nominally produced — for fixed-cache-size timing it doesn't matter
+    # what value we pick, only that the shape is [batch, 1].
+    one_token = input_ids[:, -1:].clone()
+    decode_kwargs = {"use_cache": True, "past_key_values": past}
+
+    # For encoder-decoder, the encoder hidden states are baked into past
+    # already (T5 caches encoder cross-attention KV inside past_key_values),
+    # so we drop the encoder-side `decoder_input_ids` from `extra` here.
+    decode_extra = {k: v for k, v in extra.items() if k != "decoder_input_ids"}
+
+    def decode_step() -> None:
+        with torch.inference_mode():
+            model(one_token, **decode_kwargs, **decode_extra)
+
+    return profile_callable(decode_step, warmup=warmup, runs=runs, device=device)
+
+
+__all__ = ["ProfileResult", "profile_callable", "time_decode_step"]
